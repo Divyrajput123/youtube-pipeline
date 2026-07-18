@@ -1,0 +1,129 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling<1.22"]
+
+[project]
+authors = [{ email = "you@example.com", name = "Your Name" }]
+classifiers = [
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.0,<3",
+  "anthropic>=0.25,<1",
+  "elevenlabs>=1.0,<2",
+  "fastapi>=0.100,<1",
+  "uvicorn>=0.30,<1",
+  "google-api-python-client>=2.100,<3",
+  "notion-client>=2.2,<3",
+  "slack_sdk>=3.27,<4",
+  "httpx>=0.27,<1",
+  "mutagen>=1.47,<2",
+  "pillow>=10.3,<11",
+  "python-dotenv>=1.0,<2",
+  "pyngrok>=7.0,<8",
+]
+description = "AI YouTube Content Pipeline — end-to-end automated video production system."
+dynamic = ["version"]
+license = "MIT"
+name = "ai-youtube-pipeline"
+readme = "README.md"
+requires-python = ">=3.10,<4"
+
+[project.optional-dependencies]
+checks = [
+  "mypy==1.9.0",
+  "ruff>=0.3,<0.4",
+]
+docs = [
+  "mkdocs-material>=9,<10",
+]
+tests = [
+  "coverage[toml]>=7,<8",
+  "httpx>=0.27,<1",
+  "pytest>=7,<8",
+  "pytest-asyncio>=0.23,<1",
+  "pytest-mock>=3,<4",
+  "hypothesis>=6.100,<7",
+]
+
+[tool.coverage.report]
+exclude_lines = ["if TYPE_CHECKING:", "pragma: no cover"]
+fail_under = 70
+show_missing = true
+
+[tool.coverage.run]
+command_line = "-m pytest"
+source = ["src/pipeline", "tests"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/pipeline"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pipeline"]
+
+[tool.hatch.envs.ci]
+dev-mode = false
+features = [
+  "checks",
+  "tests",
+]
+path = ".venv"
+
+[tool.hatch.envs.default]
+dev-mode = true
+features = [
+  "checks",
+  "docs",
+  "tests",
+]
+path = ".venv"
+
+[tool.hatch.envs.default.scripts]
+check = [
+  "ruff check",
+  "ruff format --check",
+  "mypy",
+  "npx -s -y prettier@'^2' . --check",
+  "npx -s -y cspell --dot --gitignore *.md **/*.md",
+]
+format = [
+  "ruff check --fix",
+  "ruff format",
+  "npx -s -y prettier@'^2' . --write",
+]
+
+[tool.hatch.envs.production]
+dev-mode = false
+features = []
+path = ".venv"
+
+[tool.hatch.version]
+path = "src/pipeline/__init__.py"
+
+[tool.mypy]
+files = ["**/*.py"]
+show_error_codes = true
+strict = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+minversion = "6.0"
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src/pipeline", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pipeline", "tests"]

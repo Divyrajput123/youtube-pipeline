@@ -1,0 +1,106 @@
+name: Weekly YouTube Pipeline
+
+on:
+  # Every Sunday at 3:30 UTC = 9:00 AM IST (UTC+5:30)
+  schedule:
+    - cron: '30 3 * * 0'
+
+  # Also allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Number of videos to generate (1-7)'
+        required: false
+        default: '7'
+        type: string
+      mode:
+        description: 'Run mode'
+        required: false
+        default: 'batch'
+        type: choice
+        options:
+          - batch
+          - single
+          - resume-all
+          - resume-and-generate
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hour timeout
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[inference-script]" 2>/dev/null || pip install -e . 
+          pip install pyngrok mutagen
+
+      - name: Create .env from GitHub Secrets
+        run: |
+          cat > .env << EOF
+          PIPELINE_MODE=production
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
+          NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}
+          NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}
+          PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}
+          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID=${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          KLING_API_KEY=${{ secrets.KLING_API_KEY }}
+          KLING_MODEL=${{ secrets.KLING_MODEL || 'kling-v1-6' }}
+          NGROK_AUTH_TOKEN=${{ secrets.NGROK_AUTH_TOKEN }}
+          NGROK_ENABLED=true
+          REVIEW_SERVER_PORT=8742
+          PIPELINE_PUBLIC_URL=http://localhost:8742
+          RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
+          RUNPOD_SERVER_URL=${{ secrets.RUNPOD_SERVER_URL }}
+          EOF
+          echo "✅ .env created"
+
+      - name: Run pipeline (scheduled — batch of 7)
+        if: github.event_name == 'schedule'
+        run: |
+          echo "🚀 Starting weekly batch of 7 videos..."
+          PYTHONPATH=src python -m pipeline --config config.json --batch-size 7
+        env:
+          PYTHONUNBUFFERED: 1
+
+      - name: Run pipeline (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          BATCH="${{ github.event.inputs.batch_size }}"
+          echo "🚀 Running pipeline in mode: $MODE"
+
+          if [ "$MODE" = "batch" ]; then
+            PYTHONPATH=src python -m pipeline --config config.json --batch-size $BATCH
+          elif [ "$MODE" = "single" ]; then
+            PYTHONPATH=src python -m pipeline --config config.json
+          elif [ "$MODE" = "resume-all" ]; then
+            PYTHONPATH=src python -m pipeline --config config.json --resume-all
+          elif [ "$MODE" = "resume-and-generate" ]; then
+            PYTHONPATH=src python -m pipeline --config config.json --resume-and-generate
+          fi
+        env:
+          PYTHONUNBUFFERED: 1
+
+      - name: Upload pipeline logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_id }}
+          path: |
+            data/output/
+            *.log
+          retention-days: 7

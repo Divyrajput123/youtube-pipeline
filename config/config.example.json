@@ -1,0 +1,24 @@
+{
+  "reference_channel_url": "https://www.youtube.com/@disneykids",
+  "voice_id": "BlgEcC0TfWpBak7FmvHW",
+  "topic_research_provider": "perplexity",
+  "style_profile_cache_days": 7,
+
+  "notification_channels": {
+    "slack_webhook_url": null,
+    "discord_webhook_url": null,
+    "smtp": null
+  },
+
+  "batch_mode": {
+    "enabled": false,
+    "target_count": 2
+  },
+
+  "cross_posting": {
+    "x":         { "enabled": false, "api_key": null },
+    "linkedin":  { "enabled": false, "access_token": null },
+    "instagram": { "enabled": false, "access_token": null },
+    "facebook":  { "enabled": false, "page_access_token": null }
+  }
+}

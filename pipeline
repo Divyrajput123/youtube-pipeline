@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Wrapper script to run the AI YouTube Content Pipeline.
+
+This script sets up the correct PYTHONPATH and runs the pipeline module.
+
+Usage:
+    ./pipeline --config config.json
+    ./pipeline --help
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# Add src/ to PYTHONPATH
+project_root = Path(__file__).parent
+src_dir = project_root / "src"
+sys.path.insert(0, str(src_dir))
+
+# Now run the pipeline module
+if __name__ == "__main__":
+    from pipeline.cli import main
+    sys.exit(main())
