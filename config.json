@@ -1,0 +1,39 @@
+{
+  "_reference_channel_note": "Set this to a YouTube channel whose style you want to mimic. Current: New Rockstars — superhero breakdowns, fights, crossovers, powers explained. Other options: @marvelentertainment, @dccomics, @screencrush",
+  "reference_channel_url": "https://www.youtube.com/@newrockstars",
+
+  "_voice_id_note": "Paid library voice (better quality, requires paid plan): BlgEcC0TfWpBak7FmvHW. Free voice (Roger, works on free plan): CwhRBWXzGAHq8TQ4Fs17",
+  "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+  "topic_research_provider": "perplexity",
+  "style_profile_cache_days": 7,
+
+  "_weekly_schedule_note": "When batch_size=7, videos are auto-scheduled Mon-Sun at publish_time_utc (24h format). Set timezone_offset_hours to your local UTC offset (e.g. 5.5 for IST, -5 for EST).",
+  "weekly_publish_time_hour": 17,
+  "weekly_publish_time_minute": 0,
+  "timezone_offset_hours": 5.5,
+
+  "notification_channels": {
+    "slack_webhook_url": null,
+    "discord_webhook_url": null,
+    "smtp": {
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "username": "divysingh178@gmail.com",
+      "password": "gwmg ysyg xnbn ysqo",
+      "from_address": "divysingh178@gmail.com",
+      "to_address": "divysingh178@gmail.com"
+    }
+  },
+
+  "batch_mode": {
+    "enabled": false,
+    "target_count": 2
+  },
+
+  "cross_posting": {
+    "x":         { "enabled": false, "api_key": null },
+    "linkedin":  { "enabled": false, "access_token": null },
+    "instagram": { "enabled": false, "access_token": null },
+    "facebook":  { "enabled": false, "page_access_token": null }
+  }
+}
