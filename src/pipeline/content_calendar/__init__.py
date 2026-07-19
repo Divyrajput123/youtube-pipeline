@@ -584,6 +584,13 @@ class Content_Calendar:
         # If batch_id is empty, fetch ALL topics within the lookback window
         # (used by single-video runs to avoid repeating any past topic).
         # Otherwise, filter by the specific batch_id as well.
+        # Always exclude videos that failed (Pipeline Error) — those topics
+        # should be retried, not excluded.
+        error_filter: dict[str, Any] = {
+            "property": "status",
+            "select": {"does_not_equal": "Pipeline Error"},
+        }
+
         if batch_id:
             notion_filter: dict[str, Any] = {
                 "and": [
@@ -595,12 +602,18 @@ class Content_Calendar:
                         "property": "pipeline_run_timestamp",
                         "date": {"on_or_after": cutoff.isoformat()},
                     },
+                    error_filter,
                 ]
             }
         else:
             notion_filter = {
-                "property": "pipeline_run_timestamp",
-                "date": {"on_or_after": cutoff.isoformat()},
+                "and": [
+                    {
+                        "property": "pipeline_run_timestamp",
+                        "date": {"on_or_after": cutoff.isoformat()},
+                    },
+                    error_filter,
+                ]
             }
 
         pages = await _retry_notion(

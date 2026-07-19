@@ -288,7 +288,12 @@ def _utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-def _build_generation_prompt(topic: TopicEntry, style_profile: StyleProfile) -> str:
+def _build_generation_prompt(
+    topic: TopicEntry,
+    style_profile: StyleProfile,
+    min_words: int = _MIN_WORDS,
+    max_words: int = _MAX_WORDS,
+) -> str:
     """Construct the Claude generation prompt for a new script.
 
     Injects Style_Profile data (tone, pacing, rhetorical patterns, segment
@@ -298,6 +303,8 @@ def _build_generation_prompt(topic: TopicEntry, style_profile: StyleProfile) -> 
     Args:
         topic: The selected TopicEntry whose title is the script subject.
         style_profile: The channel StyleProfile used to calibrate tone and structure.
+        min_words: Minimum target word count.
+        max_words: Maximum target word count.
 
     Returns:
         A fully-formed prompt string ready to be submitted to Claude.
@@ -355,7 +362,7 @@ ANNOTATION REQUIREMENTS (MANDATORY):
   or "[pause]" between sentences to signal a beat.
 - These annotations guide the narrator and must reflect the channel pacing data.
 
-TOTAL WORD COUNT TARGET: between {_MIN_WORDS} and {_MAX_WORDS} words (excluding annotation tags).
+TOTAL WORD COUNT TARGET: between {min_words} and {max_words} words (excluding annotation tags).
 
 Match the channel's rhetorical patterns ({rhetorical}) throughout.
 Output ONLY the script content — no preamble, no explanations, no metadata.
@@ -368,6 +375,8 @@ def _build_word_count_revision_prompt(
     content: str,
     current_word_count: int,
     topic_title: str,
+    min_words: int = _MIN_WORDS,
+    max_words: int = _MAX_WORDS,
 ) -> str:
     """Construct a prompt asking Claude to revise the script to fit word-count bounds.
 
@@ -375,20 +384,22 @@ def _build_word_count_revision_prompt(
         content: The current script text.
         current_word_count: Word count of the current draft.
         topic_title: Topic title for context.
+        min_words: Minimum target word count.
+        max_words: Maximum target word count.
 
     Returns:
         A revision prompt string.
     """
-    if current_word_count < _MIN_WORDS:
+    if current_word_count < min_words:
         direction = (
             f"The script is too short ({current_word_count} words). "
-            f"Expand it to reach at least {_MIN_WORDS} words by adding more detail, "
+            f"Expand it to reach at least {min_words} words by adding more detail, "
             f"examples, and explanation in the body segments."
         )
     else:
         direction = (
             f"The script is too long ({current_word_count} words). "
-            f"Shorten it to at most {_MAX_WORDS} words by tightening sentences "
+            f"Shorten it to at most {max_words} words by tightening sentences "
             f"and removing redundant content, while keeping the HOOK, BODY segments, "
             f"and CTA structure intact."
         )
@@ -400,7 +411,7 @@ def _build_word_count_revision_prompt(
 REQUIREMENTS:
 - Keep ALL section headings (HOOK, BODY segments, CTA) intact.
 - Keep AT LEAST ONE [annotation] per section/segment.
-- Final word count must be between {_MIN_WORDS} and {_MAX_WORDS} words (excluding annotations).
+- Final word count must be between {min_words} and {max_words} words (excluding annotations).
 - Output ONLY the revised script, no explanations.
 
 CURRENT SCRIPT:
@@ -521,13 +532,7 @@ class Script_Writer:
             raise ScriptGenerationError(msg)
 
         # ---- 2. Build generation prompt ------------------------------------
-        prompt = _build_generation_prompt(topic, style_profile)
-
-        # ---- 3. Call Claude with retry -------------------------------------
-        content = await self._call_claude_with_retry(prompt, video_id=video_id)
-
-        # ---- 4. Word-count enforcement -------------------------------------
-        # Compute bounds from duration if provided (overrides module defaults)
+        # Compute word-count bounds from duration config
         if script_duration_minutes and script_duration_minutes > 0:
             min_words = int(script_duration_minutes * _WPM * 0.85)
             max_words = int(script_duration_minutes * _WPM * 1.15)
@@ -535,6 +540,12 @@ class Script_Writer:
             min_words = _MIN_WORDS
             max_words = _MAX_WORDS
 
+        prompt = _build_generation_prompt(topic, style_profile, min_words, max_words)
+
+        # ---- 3. Call Claude with retry -------------------------------------
+        content = await self._call_claude_with_retry(prompt, video_id=video_id)
+
+        # ---- 4. Word-count enforcement -------------------------------------
         word_count = _count_words(content)
         logger.info(
             "Script_Writer.generate: initial word count=%d (target %d-%d) for video_id=%s",
@@ -554,7 +565,7 @@ class Script_Writer:
                 video_id,
             )
             revision_prompt = _build_word_count_revision_prompt(
-                content, word_count, topic.title
+                content, word_count, topic.title, min_words, max_words
             )
             content = await self._call_claude_with_retry(revision_prompt, video_id=video_id)
             word_count = _count_words(content)
