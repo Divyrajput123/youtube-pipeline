@@ -375,7 +375,12 @@ class Orchestrator:
             ),
         )
 
-        # Advance to Awaiting Script Review (Review Gate 1)
+        # Update Notion with script Drive URL
+        if script.asset_url:
+            try:
+                await self._content_calendar.update_asset_link(video_id, "script", script.asset_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update script_url in Notion: %s", exc)
         await self._update_calendar_status(
             video_id, PipelineStatus.AWAITING_SCRIPT_REVIEW, run_id
         )
@@ -417,6 +422,13 @@ class Orchestrator:
             ),
         )
 
+        # Update Notion with narration Drive URL
+        if narration.asset_url:
+            try:
+                await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update narration_url in Notion: %s", exc)
+
         # ------------------------------------------------------------------ #
         # Stage 5: Visual_Generator → VisualAsset                             #
         # ------------------------------------------------------------------ #
@@ -435,6 +447,18 @@ class Orchestrator:
 
         await self._update_calendar_status(video_id, PipelineStatus.VISUALS_READY, run_id)
 
+        # Update Notion with video and thumbnail Drive URLs
+        try:
+            updates = {}
+            if visual.mp4_url:
+                updates["video"] = visual.mp4_url
+            if visual.thumbnail_url:
+                updates["thumbnail"] = visual.thumbnail_url
+            for asset_type, url in updates.items():
+                await self._content_calendar.update_asset_link(video_id, asset_type, url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update video/thumbnail URLs in Notion: %s", exc)
+
         # ------------------------------------------------------------------ #
         # Stage 6: Metadata_Generator → MetadataPackage                       #
         # ------------------------------------------------------------------ #
@@ -449,6 +473,13 @@ class Orchestrator:
                 video_id=video_id,
             ),
         )
+
+        # Update Notion with metadata Drive URL
+        if getattr(metadata, "asset_url", None):
+            try:
+                await self._content_calendar.update_asset_link(video_id, "metadata", metadata.asset_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update metadata_url in Notion: %s", exc)
 
         # Advance to Awaiting Final Review (Review Gate 2)
         await self._update_calendar_status(
@@ -1249,6 +1280,13 @@ class Orchestrator:
             ),
         )
 
+        # Update Notion with script Drive URL
+        if getattr(script, "asset_url", None):
+            try:
+                await self._content_calendar.update_asset_link(video_id, "script", script.asset_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update script_url in Notion for %s: %s", video_id, exc)
+
         # Trigger Review Gate 1 (non-blocking — does not halt generation)
         await self._update_calendar_status(
             video_id, PipelineStatus.AWAITING_SCRIPT_REVIEW, run_id
@@ -1284,6 +1322,13 @@ class Orchestrator:
             ),
         )
 
+        # Update Notion with narration Drive URL
+        if getattr(narration, "asset_url", None):
+            try:
+                await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update narration_url in Notion for %s: %s", video_id, exc)
+
         # Stage: Visual_Generator
         visual: VisualAsset = await self._run_stage(
             stage_name="visual_generator",
@@ -1299,6 +1344,15 @@ class Orchestrator:
         )
         await self._update_calendar_status(video_id, PipelineStatus.VISUALS_READY, run_id)
 
+        # Update Notion with video and thumbnail Drive URLs
+        try:
+            for asset_type, url in [("video", getattr(visual, "mp4_url", None)),
+                                     ("thumbnail", getattr(visual, "thumbnail_url", None))]:
+                if url:
+                    await self._content_calendar.update_asset_link(video_id, asset_type, url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update video/thumbnail URLs in Notion for %s: %s", video_id, exc)
+
         # Stage: Metadata_Generator
         metadata: MetadataPackage = await self._run_stage(
             stage_name="metadata_generator",
@@ -1311,6 +1365,13 @@ class Orchestrator:
                 video_id=video_id,
             ),
         )
+
+        # Update Notion with metadata Drive URL
+        if getattr(metadata, "asset_url", None):
+            try:
+                await self._content_calendar.update_asset_link(video_id, "metadata", metadata.asset_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update metadata_url in Notion for %s: %s", video_id, exc)
 
         # Trigger Review Gate 2 (non-blocking)
         await self._update_calendar_status(

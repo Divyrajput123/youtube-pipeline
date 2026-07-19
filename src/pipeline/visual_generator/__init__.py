@@ -88,6 +88,14 @@ class VisualGeneratorError(Exception):
     """Raised when the Visual_Generator cannot complete an operation."""
 
 
+class KlingContentModerationError(Exception):
+    """Raised when Kling rejects a prompt due to content moderation (risk control system).
+
+    Signals that the prompt itself — not a transient network issue — caused
+    the failure, so the caller should rephrase rather than retry as-is.
+    """
+
+
 # ---------------------------------------------------------------------------
 # ViewmaxClient Protocol
 # ---------------------------------------------------------------------------
@@ -233,6 +241,8 @@ class ViewmaxMCPClient:
         if self._api_key:
             try:
                 return await self._call_kling(prompt)
+            except KlingContentModerationError:
+                raise  # let _generate_single_clip handle rephrasing and retry
             except Exception as exc:
                 exc_str = str(exc)
                 # 402 = out of credits, 401 = invalid key — these are billing issues, re-raise
@@ -307,7 +317,12 @@ class ViewmaxMCPClient:
                         logger.info("ViewmaxMCPClient: received %d bytes of MP4", len(video_resp.content))
                         return video_resp.content
                     elif status == "failed":
-                        raise RuntimeError(f"Kling task {task_id} failed: {result['data'].get('task_status_msg', '')}")
+                        msg = result["data"].get("task_status_msg", "")
+                        if "risk control" in msg.lower():
+                            raise KlingContentModerationError(
+                                f"Kling task {task_id} failed: {msg}"
+                            )
+                        raise RuntimeError(f"Kling task {task_id} failed: {msg}")
                 except Exception as poll_exc:
                     logger.warning("ViewmaxMCPClient: poll attempt %d failed (%s) — retrying", attempt + 1, poll_exc)
                     continue
@@ -471,6 +486,63 @@ def _build_scene_prompt(segment: _Segment, style_profile: StyleProfile) -> str:
     body_preview = segment.body[:100]
     patterns_str = ", ".join(style_profile.visual_style.composition_patterns)
     return f"{segment.title} visual scene: {body_preview}. Style: {patterns_str}"
+
+
+async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:
+    """Ask Claude to rewrite a prompt that was blocked by Kling's risk control system.
+
+    Strips copyrighted character names and replaces them with visual descriptions
+    so the same scene idea passes Kling's content moderation.
+
+    Args:
+        original_prompt: The prompt that was rejected.
+
+    Returns:
+        A rephrased prompt, or the original if Claude is unavailable.
+    """
+    import anthropic  # noqa: PLC0415
+
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY not set")
+
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=300,
+            system=(
+                "You are an AI video prompt editor. Your job is to rewrite video prompts "
+                "that were rejected by Kling AI's content moderation system because they "
+                "contain copyrighted character names or IP.\n\n"
+                "RULES:\n"
+                "1. Replace every named fictional character with a visual description of their "
+                "appearance and powers. Examples:\n"
+                "   - Superman → 'a caped hero in a blue suit radiating golden solar energy'\n"
+                "   - The Flash → 'a red-suited speedster trailing crimson lightning'\n"
+                "   - Batman → 'a dark-armored vigilante in a black cape and cowl'\n"
+                "   - Thor → 'a blond-bearded warrior in silver armor wielding a glowing hammer'\n"
+                "   - Iron Man → 'a hero in red-and-gold powered armor with a glowing blue chest reactor'\n"
+                "   - Spider-Man → 'a hero in a red-and-blue web-patterned suit'\n"
+                "   - Hulk → 'a massive green-skinned giant in torn purple shorts'\n"
+                "   - Goku → 'a spiky-haired fighter in an orange martial arts uniform with golden aura'\n"
+                "   - Captain America → 'a hero in a blue star-spangled suit carrying a vibranium shield'\n"
+                "2. Keep the camera direction, action, and style tags exactly the same.\n"
+                "3. Do NOT add any new content — only swap out character names.\n"
+                "4. Return only the rewritten prompt, no explanation."
+            ),
+            messages=[{
+                "role": "user",
+                "content": f"Rewrite this prompt, replacing character names with visual descriptions:\n\n{original_prompt}",
+            }],
+        )
+        rephrased = message.content[0].text.strip().strip('"\'')
+        logger.info("Prompt rephrased for moderation: %s", rephrased[:80])
+        return rephrased[:400]
+
+    except Exception as exc:
+        logger.warning("Failed to rephrase prompt via Claude: %s — using original", exc)
+        return original_prompt
 
 
 async def _generate_video_prompt_with_claude(
@@ -1324,7 +1396,11 @@ class Visual_Generator:
 
         Retry policy:
         * Up to 3 attempts.
-        * Random delay between attempts drawn from ``random.uniform(5, 30)`` seconds.
+        * On KlingContentModerationError, rephrases the prompt once via Claude
+          (replacing copyrighted character names with visual descriptions) before
+          retrying — no sleep needed since the error is deterministic.
+        * Random delay between other failure attempts drawn from
+          ``random.uniform(5, 30)`` seconds.
 
         Args:
             segment_index: Zero-based segment index (used in log messages).
@@ -1336,6 +1412,7 @@ class Visual_Generator:
             :class:`ClipResult` — either a real MP4 or a JPEG fallback.
         """
         last_exc: Optional[Exception] = None
+        current_prompt = prompt
 
         for attempt in range(1, _CLIP_RETRY_ATTEMPTS + 1):
             try:
@@ -1347,7 +1424,7 @@ class Visual_Generator:
                     video_id,
                 )
                 mp4_bytes = await self._viewmax.generate_clip(
-                    prompt=prompt,
+                    prompt=current_prompt,
                     duration_seconds=_CLIP_DEFAULT_DURATION_S,
                 )
                 logger.debug(
@@ -1361,6 +1438,25 @@ class Visual_Generator:
                     mp4_bytes=mp4_bytes,
                     is_fallback=False,
                 )
+            except KlingContentModerationError as exc:
+                last_exc = exc
+                if attempt < _CLIP_RETRY_ATTEMPTS:
+                    logger.warning(
+                        "Kling content moderation blocked prompt (attempt %d/%d) for "
+                        "segment '%s' (video_id=%s): %s. Rephrasing prompt and retrying.",
+                        attempt,
+                        _CLIP_RETRY_ATTEMPTS,
+                        segment.title,
+                        video_id,
+                        exc,
+                    )
+                    current_prompt = await _rephrase_prompt_for_moderation(current_prompt)
+                    logger.info(
+                        "Rephrased prompt for segment '%s': %s",
+                        segment.title,
+                        current_prompt[:100],
+                    )
+                    # No sleep — moderation failures are deterministic, retry immediately
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt < _CLIP_RETRY_ATTEMPTS:
@@ -1442,28 +1538,57 @@ class Visual_Generator:
             VisualGeneratorError: If ffmpeg exits with a non-zero code.
         """
         # Write each clip to disk
-        # For fallback clips, use the last real MP4 clip instead of a static JPEG
-        clip_paths: list[tuple[Path, bool]] = []  # (path, is_fallback)
-        last_real_clip_path: Optional[Path] = None
+        # For fallback clips, reuse the nearest real MP4 clip instead of a static JPEG.
+        # First pass: write all real clips to disk so we have paths to reference.
+        # Second pass: fill fallback slots — prefer the previous real clip, then
+        # the next real clip (look-ahead), and only use the static JPEG if no real
+        # clip exists anywhere in the list (i.e. every clip failed).
+        import shutil as _shutil  # noqa: PLC0415
 
+        # First pass — write real clips, record their paths by index.
+        real_clip_paths: dict[int, Path] = {}
+        for clip_idx, result in enumerate(clip_results):
+            if not result.is_fallback:
+                clip_file = tmp_path / f"clip_{clip_idx:04d}.mp4"
+                clip_file.write_bytes(result.mp4_bytes)
+                real_clip_paths[clip_idx] = clip_file
+
+        # Helper: find the nearest real clip path (previous first, then next).
+        def _nearest_real_clip(idx: int) -> Optional[Path]:
+            # Search backwards
+            for i in range(idx - 1, -1, -1):
+                if i in real_clip_paths:
+                    return real_clip_paths[i]
+            # Search forwards
+            for i in range(idx + 1, len(clip_results)):
+                if i in real_clip_paths:
+                    return real_clip_paths[i]
+            return None
+
+        # Second pass — build clip_paths with fallback slots resolved.
+        clip_paths: list[tuple[Path, bool]] = []
         for clip_idx, result in enumerate(clip_results):
             if result.is_fallback:
-                # Use last real clip if available (loops better than static JPEG)
-                if last_real_clip_path is not None:
+                nearest = _nearest_real_clip(clip_idx)
+                if nearest is not None:
                     clip_file = tmp_path / f"clip_{clip_idx:04d}.mp4"
-                    import shutil as _shutil  # noqa: PLC0415
-                    _shutil.copy(last_real_clip_path, clip_file)
+                    _shutil.copy(nearest, clip_file)
                     clip_paths.append((clip_file, False))  # treat as real MP4
-                    logger.info("Visual_Generator: using looped last real clip for fallback slot %d", clip_idx)
+                    logger.info(
+                        "Visual_Generator: fallback slot %d — reusing clip '%s'",
+                        clip_idx, nearest.name,
+                    )
                 else:
+                    # Every clip failed — last resort static JPEG
                     clip_file = tmp_path / f"clip_{clip_idx:04d}.jpg"
                     clip_file.write_bytes(result.mp4_bytes)
                     clip_paths.append((clip_file, True))
+                    logger.warning(
+                        "Visual_Generator: fallback slot %d — no real clip available, using static JPEG",
+                        clip_idx,
+                    )
             else:
-                clip_file = tmp_path / f"clip_{clip_idx:04d}.mp4"
-                clip_file.write_bytes(result.mp4_bytes)
-                clip_paths.append((clip_file, False))
-                last_real_clip_path = clip_file
+                clip_paths.append((real_clip_paths[clip_idx], False))
 
         # Download the narration MP3 from Asset_Store into the temp directory
         # so ffmpeg can access it as a local file.

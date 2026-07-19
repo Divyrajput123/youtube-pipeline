@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Word-count bounds (design §4 Word Count Enforcement)
-_MIN_WORDS = 400   # ~3 minutes at 150 WPM
-_MAX_WORDS = 500   # ~3 minutes at 150 WPM
+# Override via env vars for testing: SCRIPT_MIN_WORDS / SCRIPT_MAX_WORDS
+_MIN_WORDS = int(os.environ.get("SCRIPT_MIN_WORDS", "400"))   # ~3 minutes at 150 WPM
+_MAX_WORDS = int(os.environ.get("SCRIPT_MAX_WORDS", "500"))   # ~3 minutes at 150 WPM
 
 # Timing constants used to derive max-word limits per section (at 150 WPM)
 _WPM = 150

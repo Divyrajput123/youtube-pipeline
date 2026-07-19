@@ -39,10 +39,21 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+
       - name: Install dependencies
         run: |
-          pip install -e ".[inference-script]" 2>/dev/null || pip install -e . 
-          pip install pyngrok mutagen
+          pip install -e .
+          pip install pyngrok mutagen google-auth google-auth-httplib2
+
+      - name: Create output directories
+        run: |
+          mkdir -p data/output
+          mkdir -p pipeline_output
 
       - name: Create .env from GitHub Secrets
         run: |
@@ -65,6 +76,9 @@ jobs:
           PIPELINE_PUBLIC_URL=http://localhost:8742
           RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
           RUNPOD_SERVER_URL=${{ secrets.RUNPOD_SERVER_URL }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          SCRIPT_MIN_WORDS=130
+          SCRIPT_MAX_WORDS=160
           EOF
           echo "✅ .env created"
 

@@ -103,6 +103,22 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
     # ------------------------------------------------------------------
     channels: NotificationChannels = config.notification_channels
     smtp_cfg: SmtpConfig | None = channels.smtp
+
+    # Resolve ${SMTP_PASSWORD} placeholder from environment if present
+    if smtp_cfg is not None and smtp_cfg.password.startswith("${") and smtp_cfg.password.endswith("}"):
+        env_var = smtp_cfg.password[2:-1]
+        resolved = os.environ.get(env_var, "")
+        if resolved:
+            smtp_cfg = smtp_cfg.model_copy(update={"password": resolved})
+        else:
+            import logging as _logging  # noqa: PLC0415
+            _logging.getLogger(__name__).warning(
+                "SMTP password placeholder '%s' not resolved — %s not set in environment. "
+                "Email notifications will be disabled.",
+                smtp_cfg.password, env_var,
+            )
+            smtp_cfg = None  # disable email rather than send with wrong password
+
     notifier_config = NotifierConfig(
         slack_webhook_url=channels.slack_webhook_url,
         discord_webhook_url=channels.discord_webhook_url,

@@ -19,7 +19,7 @@
       "host": "smtp.gmail.com",
       "port": 587,
       "username": "divysingh178@gmail.com",
-      "password": "gwmg ysyg xnbn ysqo",
+      "password": "${SMTP_PASSWORD}",
       "from_address": "divysingh178@gmail.com",
       "to_address": "divysingh178@gmail.com"
     }

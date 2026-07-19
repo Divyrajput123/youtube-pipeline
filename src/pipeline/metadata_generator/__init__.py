@@ -656,12 +656,13 @@ class Metadata_Generator:
 
         # ---- 7. Persist to Asset_Store as JSON ------------------------------
         filename = f"{video_id}.json"
-        await self._store.write(
+        metadata_url = await self._store.write(
             video_id=video_id,
             subfolder=SubFolder.METADATA,
             filename=filename,
             content=package.model_dump_json(indent=2).encode("utf-8"),
         )
+        package = package.model_copy(update={"asset_url": metadata_url})
 
         logger.info(
             "Metadata_Generator: wrote %s for video_id=%s", filename, video_id
