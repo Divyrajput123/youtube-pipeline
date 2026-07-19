@@ -323,6 +323,11 @@ class ViewmaxMCPClient:
                                 f"Kling task {task_id} failed: {msg}"
                             )
                         raise RuntimeError(f"Kling task {task_id} failed: {msg}")
+                except (KlingContentModerationError, RuntimeError):
+                    # The task has reached a terminal failure state.  Do not
+                    # keep polling the same task: callers can rephrase a
+                    # moderated prompt or handle the provider failure.
+                    raise
                 except Exception as poll_exc:
                     logger.warning("ViewmaxMCPClient: poll attempt %d failed (%s) — retrying", attempt + 1, poll_exc)
                     continue
@@ -1413,6 +1418,7 @@ class Visual_Generator:
         """
         last_exc: Optional[Exception] = None
         current_prompt = prompt
+        moderation_rephrase_attempted = False
 
         for attempt in range(1, _CLIP_RETRY_ATTEMPTS + 1):
             try:
@@ -1436,27 +1442,47 @@ class Visual_Generator:
                 return ClipResult(
                     segment_index=segment_index,
                     mp4_bytes=mp4_bytes,
-                    is_fallback=False,
+                    is_fallback=mp4_bytes.startswith(b"\xff\xd8"),
                 )
             except KlingContentModerationError as exc:
                 last_exc = exc
-                if attempt < _CLIP_RETRY_ATTEMPTS:
+                if attempt >= _CLIP_RETRY_ATTEMPTS or moderation_rephrase_attempted:
                     logger.warning(
-                        "Kling content moderation blocked prompt (attempt %d/%d) for "
-                        "segment '%s' (video_id=%s): %s. Rephrasing prompt and retrying.",
-                        attempt,
-                        _CLIP_RETRY_ATTEMPTS,
+                        "Kling moderation still blocks segment '%s' (video_id=%s) after "
+                        "one rephrase; using a static fallback.",
                         segment.title,
                         video_id,
-                        exc,
                     )
-                    current_prompt = await _rephrase_prompt_for_moderation(current_prompt)
-                    logger.info(
-                        "Rephrased prompt for segment '%s': %s",
+                    break
+
+                moderation_rephrase_attempted = True
+                logger.warning(
+                    "Kling content moderation blocked prompt (attempt %d/%d) for "
+                    "segment '%s' (video_id=%s): %s. Rephrasing once and retrying.",
+                    attempt,
+                    _CLIP_RETRY_ATTEMPTS,
+                    segment.title,
+                    video_id,
+                    exc,
+                )
+                rephrased_prompt = await _rephrase_prompt_for_moderation(current_prompt)
+                if not rephrased_prompt or rephrased_prompt.strip() == current_prompt.strip():
+                    logger.warning(
+                        "Kling moderation rephrase did not change segment '%s' "
+                        "(video_id=%s); using a static fallback instead of resubmitting "
+                        "the blocked prompt.",
                         segment.title,
-                        current_prompt[:100],
+                        video_id,
                     )
-                    # No sleep — moderation failures are deterministic, retry immediately
+                    break
+
+                current_prompt = rephrased_prompt
+                logger.info(
+                    "Rephrased prompt for segment '%s': %s",
+                    segment.title,
+                    current_prompt[:100],
+                )
+                # No sleep — the next request is a new task with a new prompt.
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt < _CLIP_RETRY_ATTEMPTS:
