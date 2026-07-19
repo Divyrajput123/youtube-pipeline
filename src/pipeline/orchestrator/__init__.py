@@ -532,13 +532,26 @@ class Orchestrator:
 
         await self._update_calendar_status(video_id, PipelineStatus.UNLISTED, run_id)
 
+        # Store the YouTube video ID in the calendar so the batch scheduler can find it
+        try:
+            await self._content_calendar.set_youtube_url(
+                video_id=video_id,
+                youtube_video_id=yt_ref.youtube_video_id,
+                unlisted_url=yt_ref.unlisted_url,
+            )
+        except Exception as exc:
+            logger.warning(
+                "start_pipeline: could not store YouTube video ID for %s: %s",
+                video_id, exc,
+            )
+
         # Auto-schedule this single video in the next free slot on YouTube
         try:
             slots = await self._find_next_free_slot(n_slots=1)
             publish_dt = slots[0]
             await self._content_calendar.set_publish_datetime(
                 video_id=video_id,
-                publish_datetime=publish_dt,
+                dt=publish_dt,
             )
             await self._publisher.schedule(
                 video_id=video_id,
@@ -844,6 +857,19 @@ class Orchestrator:
                 ),
             )
             await self._update_calendar_status(video_id, PipelineStatus.UNLISTED, run_id)
+
+            # Store the YouTube video ID so the batch scheduler can find it
+            try:
+                await self._content_calendar.set_youtube_url(
+                    video_id=video_id,
+                    youtube_video_id=yt_ref.youtube_video_id,
+                    unlisted_url=yt_ref.unlisted_url,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "resume_pipeline: could not store YouTube video ID for %s: %s",
+                    video_id, exc,
+                )
 
             # Cross_Poster
             await self._run_stage(
@@ -1189,8 +1215,8 @@ class Orchestrator:
         )
         logger.info("Orchestrator.start_batch completed: batch_id=%s", batch_id)
 
-        # Auto-schedule videos Mon-Sun at configured publish time
-        if n == 7:
+        # Auto-schedule all videos at configured publish time
+        if n >= 1:
             await self._auto_schedule_weekly_batch(batch_id, video_ids)
 
         return batch_id
@@ -1501,7 +1527,7 @@ class Orchestrator:
                 # 1. Set Notion calendar datetime
                 await self._content_calendar.set_publish_datetime(
                     video_id=video_id,
-                    publish_datetime=publish_dt,
+                    dt=publish_dt,
                 )
 
                 # 2. Call YouTube API to set publishAt (video goes Public automatically)
@@ -1548,25 +1574,9 @@ class Orchestrator:
                 )
 
     async def _get_youtube_video_id(self, video_id: str) -> Optional[str]:
-        """Look up the YouTube video ID for a pipeline video_id from Notion."""
+        """Look up the YouTube video ID for a pipeline video_id from the Content Calendar."""
         try:
-            page = await self._content_calendar._resolve_page_id(video_id)  # noqa: SLF001
-            # The YouTube video ID is stored in the Notion page properties
-            # Try to read it from the asset_url or a dedicated field
-            notion_filter = {
-                "property": "video_id",
-                "rich_text": {"equals": video_id},
-            }
-            pages = await self._content_calendar._client.query_database(  # noqa: SLF001
-                self._content_calendar._db_id, filter=notion_filter  # noqa: SLF001
-            )
-            if pages:
-                # Extract YouTube URL from asset fields
-                for field in ["youtube_url", "unlisted_url", "asset_url"]:
-                    url = self._content_calendar._extract_rich_text(pages[0], field)  # noqa: SLF001
-                    if url and "youtube.com/watch?v=" in url:
-                        return url.split("v=")[-1].split("&")[0]
-            return None
+            return await self._content_calendar.get_youtube_video_id(video_id)
         except Exception as exc:
             logger.debug("_get_youtube_video_id failed for %s: %s", video_id, exc)
             return None

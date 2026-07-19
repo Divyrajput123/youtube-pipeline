@@ -184,6 +184,11 @@ class GoogleDriveMCPClient(DriveClient):
         refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
         self._drive_folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
 
+        # Store credentials for per-call service rebuilds (avoids stale SSL connections)
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._refresh_token = refresh_token
+
         # Detect placeholder / missing credentials
         _creds_present = (
             client_id and client_secret and refresh_token
@@ -392,7 +397,25 @@ class GoogleDriveMCPClient(DriveClient):
         folder_id = await self._get_or_create_folder(folder_path)
 
         def _sync_download() -> bytes:
-            result = self._service.files().list(
+            # Rebuild the Drive service each call to avoid stale SSL connections.
+            # httplib2 (used by google-api-python-client) keeps connections alive
+            # and they go stale, causing "EOF in violation of protocol" on reuse.
+            import google.auth.transport.requests as _gtr  # noqa: PLC0415
+            from google.oauth2.credentials import Credentials  # noqa: PLC0415
+            from googleapiclient.discovery import build  # noqa: PLC0415
+
+            creds = Credentials(
+                token=None,
+                refresh_token=self._refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                scopes=["https://www.googleapis.com/auth/drive"],
+            )
+            creds.refresh(_gtr.Request())
+            service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+            result = service.files().list(
                 q=f"name='{filename}' and '{folder_id}' in parents and trashed=false",
                 fields="files(id)",
                 spaces="drive",
@@ -403,7 +426,7 @@ class GoogleDriveMCPClient(DriveClient):
                     f"File not found in Drive: {folder_path}/{filename}"
                 )
             file_id = files[0]["id"]
-            request = self._service.files().get_media(fileId=file_id)
+            request = service.files().get_media(fileId=file_id)
             buf = _io.BytesIO()
             downloader = MediaIoBaseDownload(buf, request)
             done = False

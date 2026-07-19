@@ -445,6 +445,58 @@ class Content_Calendar:
         )
         logger.info("Updated %s for video_id=%s", asset_type, video_id)
 
+    async def set_youtube_url(
+        self,
+        video_id: str,
+        youtube_video_id: str,
+        unlisted_url: str,
+    ) -> None:
+        """Store the YouTube video ID and unlisted URL after a successful upload.
+
+        Args:
+            video_id: The pipeline video identifier.
+            youtube_video_id: The YouTube-assigned video ID (e.g. "dQw4w9WgXcQ").
+            unlisted_url: The full YouTube watch URL for the unlisted video.
+
+        Raises:
+            ContentCalendarError: If the Notion API fails after all retries.
+        """
+        page_id = await self._resolve_page_id(video_id)
+        properties = {
+            "youtube_video_id": {"rich_text": [{"text": {"content": youtube_video_id}}]},
+            "unlisted_url": {"url": unlisted_url},
+        }
+        await _retry_notion(
+            lambda: self._client.update_page(page_id, properties),
+            operation_name=f"set_youtube_url({video_id})",
+        )
+        logger.info(
+            "Stored YouTube video ID %s for video_id=%s", youtube_video_id, video_id
+        )
+
+    async def get_youtube_video_id(self, video_id: str) -> Optional[str]:
+        """Return the stored YouTube video ID for *video_id*, or None if not set.
+
+        Args:
+            video_id: The pipeline video identifier.
+
+        Returns:
+            YouTube video ID string, or None.
+        """
+        try:
+            notion_filter: dict[str, Any] = {
+                "property": "video_id",
+                "rich_text": {"equals": video_id},
+            }
+            pages = await self._client.query_database(self._db_id, filter=notion_filter)
+            if pages:
+                yt_id = self._extract_rich_text(pages[0], "youtube_video_id")
+                return yt_id if yt_id else None
+            return None
+        except Exception as exc:
+            logger.debug("get_youtube_video_id failed for %s: %s", video_id, exc)
+            return None
+
     async def set_publish_datetime(
         self,
         video_id: str,

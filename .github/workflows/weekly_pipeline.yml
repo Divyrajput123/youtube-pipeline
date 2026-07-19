@@ -77,8 +77,6 @@ jobs:
           RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
           RUNPOD_SERVER_URL=${{ secrets.RUNPOD_SERVER_URL }}
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
-          SCRIPT_MIN_WORDS=130
-          SCRIPT_MAX_WORDS=160
           EOF
           echo "✅ .env created"
 
