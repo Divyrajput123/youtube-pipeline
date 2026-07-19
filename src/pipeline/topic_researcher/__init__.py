@@ -123,6 +123,7 @@ class SearchClient(Protocol):
         self,
         query: str,
         hours_back: int,
+        excluded_titles: list[str] | None = None,
     ) -> list[RawTopicResult]:
         """Query the provider for trending topics.
 
@@ -130,6 +131,8 @@ class SearchClient(Protocol):
             query: Natural-language search query string.
             hours_back: Only topics that surfaced within this many hours should
                 be returned.
+            excluded_titles: Topics already used — the provider should avoid
+                returning these or semantically similar ones.
 
         Returns:
             A list of :class:`RawTopicResult` entries (may be empty).
@@ -159,6 +162,7 @@ class PerplexityMCPClient:
         self,
         query: str,
         hours_back: int,
+        excluded_titles: list[str] | None = None,
     ) -> list[RawTopicResult]:
         """Call Perplexity API to get trending topics.
 
@@ -178,9 +182,22 @@ class PerplexityMCPClient:
             logger.warning("Perplexity API key not configured — returning placeholder topics for local dev")
             return self._get_placeholder_topics()
 
+        # Build exclusion block to inject into the prompt
+        exclusion_block = ""
+        if excluded_titles:
+            # Send up to 50 most recent to keep prompt size reasonable
+            titles_to_exclude = excluded_titles[:50]
+            exclusion_list = "\n".join(f"- {t}" for t in titles_to_exclude)
+            exclusion_block = (
+                f"\n\nIMPORTANT: Do NOT suggest any of the following topics or anything "
+                f"semantically similar (same characters, same matchup, same concept):\n"
+                f"{exclusion_list}\n"
+                f"These have already been covered. Suggest completely different topics."
+            )
+
         # Build a prompt that asks for structured topic data
         prompt = (
-            f"List 10 popular superhero video topics suitable for a YouTube channel. "
+            "List 10 popular superhero video topics suitable for a YouTube channel. "
             "Include topics about: Marvel, DC Comics, anime heroes (Dragon Ball, Naruto, One Piece), "
             "superhero fights and power comparisons, character vs character battles, "
             "origin stories, superhero movie/show analysis, comic book events, and hero rankings. "
@@ -190,6 +207,7 @@ class PerplexityMCPClient:
             "'Black Panther Powers Explained', 'Spider-Man vs Batman Fight Analysis', "
             "'Top 10 Strongest Marvel Heroes Ranked'. "
             "Output ONLY the numbered list, no explanations, no disclaimers."
+            + exclusion_block
         )
 
         try:
@@ -331,6 +349,7 @@ class TavilyMCPClient:
         self,
         query: str,
         hours_back: int,
+        excluded_titles: list[str] | None = None,
     ) -> list[RawTopicResult]:
         # TODO: Call Tavily MCP `tavily_search` with query and hours_back filter.
         raise NotImplementedError(
@@ -500,6 +519,7 @@ class Topic_Researcher:
                 raw_results = await self._client.query_trending(
                     query=_SEARCH_QUERY,
                     hours_back=_TRENDING_HOURS_BACK,
+                    excluded_titles=list(excluded_lower),
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc

@@ -27,7 +27,7 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hour timeout
+    timeout-minutes: 1440  # 24 hour timeout (GitHub max)
 
     steps:
       - name: Checkout repository

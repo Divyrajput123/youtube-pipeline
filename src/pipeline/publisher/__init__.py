@@ -143,6 +143,33 @@ class YouTubeClient(Protocol):
         """
         ...
 
+    async def list_scheduled_videos(self) -> list[datetime]:
+        """Return publish datetimes of all videos currently scheduled (private + publishAt set).
+
+        Used to find the next free scheduling slot so videos don't overlap.
+
+        Returns:
+            List of UTC datetimes for all scheduled videos, may be empty.
+
+        Raises:
+            Exception: Any YouTube API error.
+        """
+        ...
+
+    async def list_uploaded_titles(self) -> list[str]:
+        """Return titles of all videos already on the channel (published + unlisted + scheduled).
+
+        Used to build the topic exclusion list so the pipeline never repeats
+        a topic that already exists on the channel.
+
+        Returns:
+            List of video title strings, may be empty.
+
+        Raises:
+            Exception: Any YouTube API error.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # YouTubeDataAPIClient — production stub
@@ -307,6 +334,100 @@ class YouTubeDataAPIClient:
 
         loop = _asyncio.get_running_loop()
         await loop.run_in_executor(None, _sync_update)
+
+    async def list_scheduled_videos(self) -> list[datetime]:
+        """Return publish datetimes of all privately scheduled videos on the channel."""
+        if self._fallback_mode:
+            logger.info("YouTube fallback: returning empty scheduled videos list")
+            return []
+
+        import asyncio as _asyncio  # noqa: PLC0415
+        from datetime import timezone as _tz  # noqa: PLC0415
+
+        def _sync_list() -> list[datetime]:
+            scheduled: list[datetime] = []
+            request = self._service.videos().list(
+                part="status",
+                mine=True,
+                myRating=None,
+                maxResults=50,
+            )
+            # YouTube doesn't support filtering by privacyStatus in list(),
+            # so we use search().list() with type=video and eventType=upcoming
+            search_req = self._service.search().list(
+                part="id",
+                forMine=True,
+                type="video",
+                eventType="upcoming",
+                maxResults=50,
+            )
+            search_resp = search_req.execute()
+            video_ids = [
+                item["id"]["videoId"]
+                for item in search_resp.get("items", [])
+            ]
+            if not video_ids:
+                return scheduled
+
+            # Fetch status details for each found video
+            details_resp = self._service.videos().list(
+                part="status",
+                id=",".join(video_ids),
+            ).execute()
+
+            for item in details_resp.get("items", []):
+                publish_at = item.get("status", {}).get("publishAt")
+                if publish_at:
+                    dt = datetime.fromisoformat(publish_at.replace("Z", "+00:00"))
+                    scheduled.append(dt.astimezone(_tz.utc))
+
+            return scheduled
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_list)
+
+    async def list_uploaded_titles(self) -> list[str]:
+        """Return titles of all videos on the channel (all privacy statuses)."""
+        if self._fallback_mode:
+            logger.info("YouTube fallback: returning empty uploaded titles list")
+            return []
+
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        def _sync_list_titles() -> list[str]:
+            titles: list[str] = []
+            # Get the channel's uploads playlist ID first
+            ch_resp = self._service.channels().list(
+                part="contentDetails", mine=True
+            ).execute()
+            items = ch_resp.get("items", [])
+            if not items:
+                return titles
+            uploads_playlist_id = (
+                items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+            )
+
+            # Page through the uploads playlist to get all video titles
+            next_page_token = None
+            while True:
+                pl_resp = self._service.playlistItems().list(
+                    part="snippet",
+                    playlistId=uploads_playlist_id,
+                    maxResults=50,
+                    pageToken=next_page_token,
+                ).execute()
+                for item in pl_resp.get("items", []):
+                    title = item.get("snippet", {}).get("title", "")
+                    if title and title != "Deleted video" and title != "Private video":
+                        titles.append(title)
+                next_page_token = pl_resp.get("nextPageToken")
+                if not next_page_token:
+                    break
+
+            return titles
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_list_titles)
 
     async def _fetch_bytes(self, url_or_path: str) -> bytes:
         """Download content from a Google Drive URL or read a local file path."""

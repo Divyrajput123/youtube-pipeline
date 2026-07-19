@@ -326,6 +326,18 @@ class Orchestrator:
         except Exception:
             pass  # if it fails, proceed without exclusions
 
+        # Also pull titles of already-uploaded YouTube videos to avoid repeating
+        # topics that exist on the channel but predate the Notion calendar
+        try:
+            yt_titles = await self._publisher._yt.list_uploaded_titles()  # noqa: SLF001
+            past_topics = list({*past_topics, *yt_titles})  # merge, deduplicate
+            logger.info(
+                "start_pipeline: built exclusion list with %d titles (%d from Notion, %d from YouTube)",
+                len(past_topics), len(past_topics) - len(yt_titles), len(yt_titles),
+            )
+        except Exception as exc:
+            logger.warning("start_pipeline: could not fetch YouTube titles for exclusion: %s", exc)
+
         topics: list[TopicEntry] = await self._run_stage(
             stage_name="topic_researcher",
             video_id=video_id,
@@ -345,6 +357,12 @@ class Orchestrator:
         # ------------------------------------------------------------------ #
         # Use the top-ranked topic.
         top_topic: TopicEntry = topics[0]
+
+        # Persist chosen topic to Notion so future runs can exclude it
+        try:
+            await self._content_calendar.update_topic(video_id, top_topic.title)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not save topic to Notion (dedup may miss it): %s", exc)
         script: Script = await self._run_stage(
             stage_name="script_writer",
             video_id=video_id,
@@ -482,6 +500,29 @@ class Orchestrator:
         )
 
         await self._update_calendar_status(video_id, PipelineStatus.UNLISTED, run_id)
+
+        # Auto-schedule this single video in the next free slot on YouTube
+        try:
+            slots = await self._find_next_free_slot(n_slots=1)
+            publish_dt = slots[0]
+            await self._content_calendar.set_publish_datetime(
+                video_id=video_id,
+                publish_datetime=publish_dt,
+            )
+            await self._publisher.schedule(
+                video_id=video_id,
+                youtube_video_id=yt_ref.youtube_video_id,
+                publish_datetime=publish_dt,
+            )
+            logger.info(
+                "start_pipeline: auto-scheduled video_id=%s for %s",
+                video_id, publish_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "start_pipeline: could not auto-schedule video_id=%s (%s) — staying Unlisted",
+                video_id, exc,
+            )
 
         # Send post-upload notification with YouTube unlisted URL
         self._notifier.send_review_gate(
@@ -1035,6 +1076,17 @@ class Orchestrator:
             batch_id=batch_id, lookback_days=180  # exclude topics used in past 90 days
         )
 
+        # Also include already-uploaded YouTube video titles
+        try:
+            yt_titles = await self._publisher._yt.list_uploaded_titles()  # noqa: SLF001
+            excluded_titles = list({*excluded_titles, *yt_titles})
+            logger.info(
+                "start_batch: exclusion list has %d titles (%d from YouTube)",
+                len(excluded_titles), len(yt_titles),
+            )
+        except Exception as exc:
+            logger.warning("start_batch: could not fetch YouTube titles for exclusion: %s", exc)
+
         style_profile: StyleProfile = await self._run_stage(
             stage_name="reference_analyzer",
             video_id=video_ids[0],
@@ -1178,6 +1230,12 @@ class Orchestrator:
             batch_id: Parent batch identifier (for log entries).
             run_id: Pipeline run identifier (reused from batch_id).
         """
+        # Persist chosen topic to Notion so future runs can exclude it
+        try:
+            await self._content_calendar.update_topic(video_id, topic.title)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not save topic to Notion for video_id=%s: %s", video_id, exc)
+
         # Stage: Script_Writer
         script: Script = await self._run_stage(
             stage_name="script_writer",
@@ -1287,6 +1345,69 @@ class Orchestrator:
             batch_id,
         )
 
+    async def _find_next_free_slot(self, n_slots: int = 1) -> list[datetime]:
+        """Return *n_slots* consecutive daily publish datetimes starting after
+        the latest already-scheduled video on the channel.
+
+        Steps:
+        1. Query YouTube for all scheduled (upcoming) video datetimes.
+        2. Find the latest one. If none exist, use tomorrow.
+        3. Return n_slots datetimes, each one day apart, at the configured
+           publish time (converted to UTC).
+
+        Args:
+            n_slots: Number of consecutive daily slots to return.
+
+        Returns:
+            List of UTC datetimes, length == n_slots, each at publish time.
+        """
+        from datetime import timedelta  # noqa: PLC0415
+
+        # Convert configured local publish time to UTC
+        publish_hour_local = self._config.weekly_publish_time_hour
+        publish_minute_local = self._config.weekly_publish_time_minute
+        tz_offset = self._config.timezone_offset_hours
+        total_minutes = publish_hour_local * 60 + publish_minute_local - int(tz_offset * 60)
+        publish_hour_utc = (total_minutes // 60) % 24
+        publish_minute_utc = total_minutes % 60
+
+        # Query YouTube for already-scheduled videos
+        try:
+            scheduled_dts = await self._publisher._yt.list_scheduled_videos()  # noqa: SLF001
+        except Exception as exc:
+            logger.warning("_find_next_free_slot: could not query YouTube schedules: %s", exc)
+            scheduled_dts = []
+
+        now_utc = _utcnow()
+
+        if scheduled_dts:
+            # Start the day after the latest scheduled video
+            latest = max(scheduled_dts)
+            base_date = latest.date()
+            logger.info(
+                "_find_next_free_slot: latest scheduled video is %s, starting from %s",
+                latest.strftime("%Y-%m-%d"), (base_date + timedelta(days=1)).isoformat(),
+            )
+        else:
+            # No videos scheduled yet — start from tomorrow
+            base_date = now_utc.date()
+            logger.info("_find_next_free_slot: no scheduled videos found, starting from tomorrow")
+
+        slots: list[datetime] = []
+        for i in range(n_slots):
+            slot_date = base_date + timedelta(days=i + 1)
+            slot_dt = datetime(
+                slot_date.year, slot_date.month, slot_date.day,
+                publish_hour_utc, publish_minute_utc, 0,
+                tzinfo=timezone.utc,
+            )
+            # Must be at least 15 minutes in the future (YouTube requirement)
+            if slot_dt <= now_utc + timedelta(minutes=15):
+                slot_dt += timedelta(days=1)
+            slots.append(slot_dt)
+
+        return slots
+
     async def _auto_schedule_weekly_batch(
         self, batch_id: str, video_ids: list[str]
     ) -> None:
@@ -1298,38 +1419,18 @@ class Orchestrator:
         """
         from datetime import timedelta  # noqa: PLC0415
 
-        now_utc = _utcnow()
-        days_until_monday = (7 - now_utc.weekday()) % 7
-        if days_until_monday == 0:
-            days_until_monday = 7
-
+        # Find n consecutive free slots starting after the last scheduled video
+        slots = await self._find_next_free_slot(n_slots=len(video_ids))
         day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
-        publish_hour_local = self._config.weekly_publish_time_hour
-        publish_minute_local = self._config.weekly_publish_time_minute
-        tz_offset = self._config.timezone_offset_hours
-
-        # Convert local time to UTC
-        total_minutes = publish_hour_local * 60 + publish_minute_local - int(tz_offset * 60)
-        publish_hour_utc = (total_minutes // 60) % 24
-        publish_minute_utc = total_minutes % 60
-
         logger.info(
-            "_auto_schedule_weekly_batch: scheduling %d videos Mon-Sun at %02d:%02d UTC",
-            len(video_ids), publish_hour_utc, publish_minute_utc,
+            "_auto_schedule_weekly_batch: scheduling %d videos starting %s",
+            len(video_ids), slots[0].strftime("%Y-%m-%d") if slots else "unknown",
         )
 
         for i, video_id in enumerate(video_ids):
-            days_ahead = days_until_monday + i
-            publish_date = now_utc + timedelta(days=days_ahead)
-            publish_dt = publish_date.replace(
-                hour=publish_hour_utc,
-                minute=publish_minute_utc,
-                second=0,
-                microsecond=0,
-            )
-
-            day_name = day_names[i % 7]
+            publish_dt = slots[i]
+            day_name = day_names[publish_dt.weekday()]
             logger.info(
                 "_auto_schedule_weekly_batch: %s → %s (%s)",
                 video_id, publish_dt.isoformat(), day_name,

@@ -36,7 +36,6 @@ class PipelineStatus(str, Enum):
     AUTO_APPROVED_FOR_UPLOAD = "Auto-Approved for Upload"
     UPLOADING = "Uploading"
     UNLISTED = "Unlisted"
-    AWAITING_SCHEDULE = "Awaiting Schedule"
     SCHEDULED = "Scheduled"
     PUBLISHED = "Published"
     PIPELINE_ERROR = "Pipeline Error"

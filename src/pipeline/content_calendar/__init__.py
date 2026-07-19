@@ -379,6 +379,32 @@ class Content_Calendar:
         )
         logger.info("Updated status for video_id=%s to %s", video_id, status.value)
 
+    async def update_topic(
+        self,
+        video_id: str,
+        topic: str,
+    ) -> None:
+        """Set the ``topic`` field on the Notion record for *video_id*.
+
+        Called right after topic research so deduplication works in future runs.
+
+        Args:
+            video_id: The pipeline video identifier.
+            topic: The chosen topic title string.
+
+        Raises:
+            ContentCalendarError: If the Notion API fails after all retries.
+        """
+        page_id = await self._resolve_page_id(video_id)
+        properties = {
+            "topic": {"rich_text": [{"text": {"content": topic[:2000]}}]}
+        }
+        await _retry_notion(
+            lambda: self._client.update_page(page_id, properties),
+            operation_name=f"update_topic({video_id})",
+        )
+        logger.info("Updated topic for video_id=%s to %r", video_id, topic)
+
     async def update_asset_link(
         self,
         video_id: str,
@@ -503,19 +529,27 @@ class Content_Calendar:
         """
         cutoff = self._now() - timedelta(days=lookback_days)
 
-        # Notion filter: batch_id == batch_id AND pipeline_run_timestamp >= cutoff
-        notion_filter: dict[str, Any] = {
-            "and": [
-                {
-                    "property": "batch_id",
-                    "rich_text": {"equals": batch_id},
-                },
-                {
-                    "property": "pipeline_run_timestamp",
-                    "date": {"on_or_after": cutoff.isoformat()},
-                },
-            ]
-        }
+        # If batch_id is empty, fetch ALL topics within the lookback window
+        # (used by single-video runs to avoid repeating any past topic).
+        # Otherwise, filter by the specific batch_id as well.
+        if batch_id:
+            notion_filter: dict[str, Any] = {
+                "and": [
+                    {
+                        "property": "batch_id",
+                        "rich_text": {"equals": batch_id},
+                    },
+                    {
+                        "property": "pipeline_run_timestamp",
+                        "date": {"on_or_after": cutoff.isoformat()},
+                    },
+                ]
+            }
+        else:
+            notion_filter = {
+                "property": "pipeline_run_timestamp",
+                "date": {"on_or_after": cutoff.isoformat()},
+            }
 
         pages = await _retry_notion(
             lambda: self._client.query_database(self._db_id, filter=notion_filter),
