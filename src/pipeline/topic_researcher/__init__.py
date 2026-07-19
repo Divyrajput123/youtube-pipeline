@@ -206,6 +206,8 @@ class PerplexityMCPClient:
             "Example topics: 'Thor vs Superman: Who Would Win', 'Goku vs Saitama Power Comparison', "
             "'Black Panther Powers Explained', 'Spider-Man vs Batman Fight Analysis', "
             "'Top 10 Strongest Marvel Heroes Ranked'. "
+            "Write every title entirely in English using standard Latin characters. "
+            "Do not use Chinese, Japanese, Korean, Cyrillic, or any other non-Latin characters. "
             "Output ONLY the numbered list, no explanations, no disclaimers."
             + exclusion_block
         )
@@ -530,6 +532,16 @@ class Topic_Researcher:
                     exc,
                 )
                 raw_results = []
+
+            rejected_titles = [result.title for result in raw_results if not result.title.isascii()]
+            if rejected_titles:
+                logger.warning(
+                    "Topic_Researcher: discarded %d non-English/Latin-character "
+                    "topic title(s) on attempt %d.",
+                    len(rejected_titles),
+                    attempt,
+                )
+                raw_results = [result for result in raw_results if result.title.isascii()]
 
             count = len(raw_results)
 
