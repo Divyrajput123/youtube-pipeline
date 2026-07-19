@@ -419,6 +419,7 @@ class PipelineConfig(BaseModel):
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
     style_profile_cache_days: int = Field(..., ge=0)
+    script_duration_minutes: float = Field(default=1.0, gt=0, le=30)
 
     # Weekly schedule settings — used when batch_size=7
     # Videos publish Mon-Sun at this time (local time, converted to UTC)

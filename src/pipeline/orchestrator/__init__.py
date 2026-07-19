@@ -372,6 +372,7 @@ class Orchestrator:
                 topic=top_topic,
                 style_profile=style_profile,
                 video_id=video_id,
+                script_duration_minutes=self._config.script_duration_minutes,
             ),
         )
 
@@ -755,6 +756,7 @@ class Orchestrator:
                         topic=topics[0],  # type: ignore[index]
                         style_profile=style_profile,  # type: ignore[arg-type]
                         video_id=video_id,
+                        script_duration_minutes=self._config.script_duration_minutes,
                     ),
                 )
                 await self._update_calendar_status(
@@ -1303,6 +1305,7 @@ class Orchestrator:
                 topic=topic,
                 style_profile=style_profile,
                 video_id=video_id,
+                script_duration_minutes=self._config.script_duration_minutes,
             ),
         )
 

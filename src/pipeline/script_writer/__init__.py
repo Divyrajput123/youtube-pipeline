@@ -28,10 +28,13 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Word-count bounds (design §4 Word Count Enforcement)
-# Override via env vars for testing: SCRIPT_MIN_WORDS / SCRIPT_MAX_WORDS
-_MIN_WORDS = int(os.environ.get("SCRIPT_MIN_WORDS", "400"))   # ~3 minutes at 150 WPM
-_MAX_WORDS = int(os.environ.get("SCRIPT_MAX_WORDS", "500"))   # ~3 minutes at 150 WPM
+# Word-count bounds — derived from script_duration_minutes in config.json
+# Default 1 min if not configured. The generate() method receives the actual
+# value from PipelineConfig at runtime.
+_WPM = 150
+_DEFAULT_DURATION_MIN = 1.0
+_MIN_WORDS = int(_DEFAULT_DURATION_MIN * _WPM * 0.85)
+_MAX_WORDS = int(_DEFAULT_DURATION_MIN * _WPM * 1.15)
 
 # Timing constants used to derive max-word limits per section (at 150 WPM)
 _WPM = 150
@@ -468,6 +471,7 @@ class Script_Writer:
         topic: TopicEntry,
         style_profile: StyleProfile,
         video_id: str,
+        script_duration_minutes: Optional[float] = None,
     ) -> Script:
         """Generate a new script for *topic* styled after *style_profile*.
 
@@ -475,7 +479,7 @@ class Script_Writer:
         1. Validate inputs (non-empty topic title; non-None style_profile).
         2. Build a Claude prompt with full Style_Profile injection.
         3. Call Claude with retry (3 attempts, exponential 5 s base / 20 s max).
-        4. Enforce word-count [800, 1500]; revise once automatically if out of range.
+        4. Enforce word-count bounds; revise once automatically if out of range.
         5. Raise :class:`ScriptGenerationError` if still out of range after revision.
         6. Determine the next version number and write ``script_v{n}.md`` to Asset_Store.
         7. Return a fully-populated :class:`~pipeline.models.Script` object.
@@ -484,6 +488,9 @@ class Script_Writer:
             topic: Selected :class:`~pipeline.models.TopicEntry`.
             style_profile: Loaded :class:`~pipeline.models.StyleProfile`.
             video_id: Pipeline video identifier (used for Asset_Store path).
+            script_duration_minutes: Target duration in minutes. If provided,
+                overrides module-level _MIN_WORDS / _MAX_WORDS. Defaults to
+                config.json or env var values.
 
         Returns:
             A :class:`~pipeline.models.Script` with ``asset_url`` set.
@@ -520,20 +527,30 @@ class Script_Writer:
         content = await self._call_claude_with_retry(prompt, video_id=video_id)
 
         # ---- 4. Word-count enforcement -------------------------------------
+        # Compute bounds from duration if provided (overrides module defaults)
+        if script_duration_minutes and script_duration_minutes > 0:
+            min_words = int(script_duration_minutes * _WPM * 0.85)
+            max_words = int(script_duration_minutes * _WPM * 1.15)
+        else:
+            min_words = _MIN_WORDS
+            max_words = _MAX_WORDS
+
         word_count = _count_words(content)
         logger.info(
-            "Script_Writer.generate: initial word count=%d for video_id=%s",
+            "Script_Writer.generate: initial word count=%d (target %d-%d) for video_id=%s",
             word_count,
+            min_words,
+            max_words,
             video_id,
         )
 
-        if not (_MIN_WORDS <= word_count <= _MAX_WORDS):
+        if not (min_words <= word_count <= max_words):
             logger.warning(
                 "Script_Writer.generate: word count %d out of [%d, %d] — "
                 "running automatic revision for video_id=%s",
                 word_count,
-                _MIN_WORDS,
-                _MAX_WORDS,
+                min_words,
+                max_words,
                 video_id,
             )
             revision_prompt = _build_word_count_revision_prompt(
@@ -543,9 +560,9 @@ class Script_Writer:
             word_count = _count_words(content)
 
             # ---- 5. Check again after revision ----------------------------
-            if not (_MIN_WORDS <= word_count <= _MAX_WORDS):
+            if not (min_words <= word_count <= max_words):
                 error_msg = (
-                    f"Script word count {word_count} still outside [{_MIN_WORDS}, {_MAX_WORDS}] "
+                    f"Script word count {word_count} still outside [{min_words}, {max_words}] "
                     f"after automatic revision for video_id={video_id}."
                 )
                 logger.error(error_msg)
