@@ -1,23 +1,25 @@
-"""LTX-Video generation server — pipeline cached at startup.
+"""LTX-Video RunPod Serverless handler.
 
-Loads the LTX-Video pipeline ONCE at startup and reuses it for all requests.
-This means first startup takes 2-3 minutes (model loading) but each subsequent
-clip generates in ~20-30s on H100.
+Loads the LTX-Video pipeline ONCE per worker lifetime (model stays cached in
+memory across multiple jobs on the same worker).  RunPod manages worker
+lifecycle — workers spin up on demand and terminate when idle, so there is no
+persistent pod to start, stop, or pay for between runs.
 
-Run inside the venv:
-    cd /workspace/LTX-Video
-    source .venv/bin/activate
-    HF_HOME=/workspace/huggingface PORT=9000 python /workspace/server_new.py
+Deploy
+------
+1. Build and push a Docker image containing this file and the LTX-Video repo.
+2. In the RunPod dashboard create a Serverless endpoint pointing to that image.
+3. Copy the endpoint ID into RUNPOD_ENDPOINT_ID in your .env / GitHub Secrets.
+4. Set RUNPOD_API_KEY in your .env / GitHub Secrets.
 
-API:
-    POST /jobs      — submit async generation job, returns job_id immediately
-    GET  /jobs/{id} — poll job status, returns MP4 bytes when done
-    POST /generate  — synchronous (blocks until done, hits proxy timeout for long jobs)
-    GET  /health    — liveness + VRAM stats
+The pipeline client calls:
+    POST https://api.runpod.ai/v2/{endpoint_id}/run
+    GET  https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}
 """
 
 from __future__ import annotations
 
+import base64
 import gc
 import logging
 import os
@@ -26,10 +28,7 @@ import sys
 import tempfile
 
 import torch
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
-from pydantic import BaseModel
+import runpod
 
 # ---------------------------------------------------------------------------
 # Path / env
@@ -45,29 +44,27 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Config path — set by start.sh with local checkpoint paths
 _CONFIG_PATH = os.environ.get(
     "LTX_CONFIG_PATH",
-    "/tmp/ltxv-13b-0.9.8-dev-local.yaml"
+    "/tmp/ltxv-13b-0.9.8-dev-local.yaml",
 )
 
 # ---------------------------------------------------------------------------
-# Global pipeline cache
+# Global pipeline cache (persists across jobs on the same worker)
 # ---------------------------------------------------------------------------
-_pipeline = None          # cached pipeline dict
+_pipeline = None
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 # ---------------------------------------------------------------------------
-# Monkey-patch: cache pipeline + keep text encoder on CPU
+# Monkey-patch: cache pipeline + disable prompt enhancer
 # ---------------------------------------------------------------------------
 
-def _apply_patches():
-    """Patch create_ltx_video_pipeline to:
-    1. Cache the pipeline after first load (avoids reloading on every request)
-    2. Keep text encoder on CPU (saves VRAM — though H100 80GB doesn't need it)
-    3. Disable prompt enhancer (avoids downloading Florence-2 + Llama)
-    """
+def _apply_patches() -> None:
+    """Patch create_ltx_video_pipeline to cache after first load and disable
+    the prompt enhancer (avoids downloading Florence-2 + Llama)."""
     import ltx_video.inference as _inf  # noqa: PLC0415
+
     _orig_create = _inf.create_ltx_video_pipeline
 
     def _cached_create(*args, **kwargs):
@@ -76,44 +73,32 @@ def _apply_patches():
             logger.info("Returning cached pipeline (skipping reload)")
             return _pipeline
 
-        logger.info("create_ltx_video_pipeline: loading for the first time...")
+        logger.info("create_ltx_video_pipeline: loading for the first time…")
 
-        # Disable prompt enhancer
-        for i, a in enumerate(args):
+        for a in args:
             if isinstance(a, dict):
                 a["prompt_enhancement_words_threshold"] = 99999
                 a["prompt_enhancer_image_caption_model_name_or_path"] = None
                 a["prompt_enhancer_llm_model_name_or_path"] = None
-        if "prompt_enhancer_image_caption_model_name_or_path" in kwargs:
-            kwargs["prompt_enhancer_image_caption_model_name_or_path"] = None
-            kwargs["prompt_enhancer_llm_model_name_or_path"] = None
+
+        kwargs.setdefault("prompt_enhancer_image_caption_model_name_or_path", None)
+        kwargs.setdefault("prompt_enhancer_llm_model_name_or_path", None)
 
         result = _orig_create(*args, **kwargs)
         _pipeline = result
-        logger.info("Pipeline cached! VRAM: %.1f GB used",
-                    torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0)
+        vram = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+        logger.info("Pipeline cached — VRAM: %.1f GB used", vram)
         return result
 
     _inf.create_ltx_video_pipeline = _cached_create
     logger.info("Pipeline caching patch applied")
 
 
-def _patch_inference_py():
-    """Patch inference.py in memory to disable enhance_prompt and fix generator."""
-    import ltx_video.inference as _inf  # noqa: PLC0415
-    import inspect, types  # noqa: PLC0415
-
-    src = inspect.getsource(_inf.infer)
-    # These are already patched on disk by start.sh — just verify
-    logger.info("infer() function loaded OK")
-
-
-_apply_patches()
-
-# Patch hf_hub_download to use local spatial upscaler
-def _patch_hf():
+def _patch_hf() -> None:
+    """Patch hf_hub_download to use a locally cached spatial upscaler."""
     import huggingface_hub.file_download as _fd  # noqa: PLC0415
     import ltx_video.inference as _ltx_inf  # noqa: PLC0415
+
     _orig = _fd.hf_hub_download
 
     def _patched(repo_id=None, filename=None, *args, **kwargs):
@@ -128,141 +113,51 @@ def _patch_hf():
     _ltx_inf.hf_hub_download = _patched
     logger.info("hf_hub_download patched for spatial upscaler")
 
+
+_apply_patches()
 _patch_hf()
 
 from ltx_video.inference import infer, InferenceConfig  # noqa: E402, PLC0415
 
 
 # ---------------------------------------------------------------------------
-# App
+# Inference
 # ---------------------------------------------------------------------------
-app = FastAPI(title="LTX-Video Generation Server")
-_pipeline_lock = None
 
-# Job store
-_jobs: dict = {}
-
-# ---------------------------------------------------------------------------
-# Request model
-# ---------------------------------------------------------------------------
-class GenerateRequest(BaseModel):
-    prompt: str
+def _run_inference(
+    prompt: str,
     negative_prompt: str = (
         "worst quality, inconsistent motion, blurry, jittery, distorted, "
         "watermark, text, static, low quality"
-    )
-    height: int = 512
-    width: int = 768
-    num_frames: int = 97
-    frame_rate: int = 25
-    seed: int = 42
-
-
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-@app.on_event("startup")
-async def _startup():
-    import asyncio  # noqa: PLC0415
-    global _pipeline_lock
-    _pipeline_lock = asyncio.Lock()
-    logger.info("Server ready on port %s — pipeline loads on first request (cached after)", 
-                os.environ.get("PORT", 8000))
-
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-@app.get("/health")
-async def health():
-    used = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-    total = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
-    return {
-        "status": "ok",
-        "model": "LTX-Video 13B (pipeline cached)",
-        "pipeline_loaded": _pipeline is not None,
-        "vram_used_gb": round(used, 2),
-        "vram_total_gb": round(total, 2),
-        "active_jobs": len([j for j in _jobs.values() if j["status"] == "pending"]),
-    }
-
-
-@app.post("/generate")
-async def generate(req: GenerateRequest) -> Response:
-    """Synchronous — blocks until done. Use /jobs for async."""
-    import asyncio  # noqa: PLC0415
-    async with _pipeline_lock:
-        loop = asyncio.get_running_loop()
-        try:
-            mp4_bytes = await loop.run_in_executor(None, _run_inference, req)
-        except Exception as exc:
-            logger.error("Generation failed: %s", exc, exc_info=True)
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return Response(content=mp4_bytes, media_type="video/mp4")
-
-
-@app.post("/jobs")
-async def submit_job(req: GenerateRequest):
-    """Async job submission — returns job_id immediately."""
-    import asyncio, uuid  # noqa: PLC0415
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "pending", "data": None, "error": None}
-    logger.info("Job %s submitted", job_id)
-
-    async def _run():
-        async with _pipeline_lock:
-            loop = asyncio.get_running_loop()
-            try:
-                data = await loop.run_in_executor(None, _run_inference, req)
-                _jobs[job_id]["data"] = data
-                _jobs[job_id]["status"] = "done"
-                logger.info("Job %s done (%d bytes)", job_id, len(data))
-            except Exception as exc:
-                _jobs[job_id]["status"] = "error"
-                _jobs[job_id]["error"] = str(exc)
-                logger.error("Job %s failed: %s", job_id, exc, exc_info=True)
-
-    asyncio.create_task(_run())
-    return {"job_id": job_id, "status": "pending"}
-
-
-@app.get("/jobs/{job_id}")
-async def get_job(job_id: str):
-    if job_id not in _jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job = _jobs[job_id]
-    if job["status"] == "pending":
-        return {"job_id": job_id, "status": "pending"}
-    if job["status"] == "error":
-        _jobs.pop(job_id)
-        raise HTTPException(status_code=500, detail=job["error"])
-    data = job["data"]
-    _jobs.pop(job_id)
-    return Response(content=data, media_type="video/mp4")
-
-
-# ---------------------------------------------------------------------------
-# Inference — uses cached pipeline
-# ---------------------------------------------------------------------------
-def _run_inference(req: GenerateRequest) -> bytes:
+    ),
+    height: int = 512,
+    width: int = 768,
+    num_frames: int = 97,
+    frame_rate: int = 25,
+    seed: int = 42,
+) -> bytes:
+    """Run LTX-Video inference and return raw MP4 bytes."""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    logger.info("Generating '%s…' (%d frames %dx%d)", req.prompt[:60], req.num_frames, req.width, req.height)
+    logger.info(
+        "Generating '%s…' (%d frames %dx%d)",
+        prompt[:60], num_frames, width, height,
+    )
 
     try:
         with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
             config = InferenceConfig(
-                prompt=req.prompt,
-                negative_prompt=req.negative_prompt,
-                height=req.height,
-                width=req.width,
-                num_frames=req.num_frames,
-                frame_rate=req.frame_rate,
-                seed=req.seed,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                frame_rate=frame_rate,
+                seed=seed,
                 pipeline_config=_CONFIG_PATH,
-                offload_to_cpu=False,  # H100 80GB has plenty of VRAM
+                offload_to_cpu=False,
                 output_path=tmpdir,
             )
             infer(config=config)
@@ -278,15 +173,59 @@ def _run_inference(req: GenerateRequest) -> bytes:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.info("VRAM: %.1f GB used / %.1f GB total",
-                        torch.cuda.memory_allocated() / 1e9,
-                        torch.cuda.get_device_properties(0).total_memory / 1e9)
+            logger.info(
+                "VRAM after inference: %.1f GB / %.1f GB",
+                torch.cuda.memory_allocated() / 1e9,
+                torch.cuda.get_device_properties(0).total_memory / 1e9,
+            )
 
 
 # ---------------------------------------------------------------------------
-# Main
+# RunPod Serverless handler
+# ---------------------------------------------------------------------------
+
+def handler(job: dict) -> dict:
+    """RunPod calls this function for every submitted job.
+
+    Expected input fields (all optional except ``prompt``):
+        prompt          str   — scene description
+        negative_prompt str   — things to avoid
+        height          int   — frame height in pixels (default 512)
+        width           int   — frame width in pixels (default 768)
+        num_frames      int   — total frames to generate (default 97)
+        frame_rate      int   — output FPS (default 25)
+        seed            int   — RNG seed (default 42)
+
+    Returns:
+        {"mp4_b64": "<base64-encoded MP4 bytes>"}
+        or raises an exception which RunPod converts to an error response.
+    """
+    inputs = job.get("input", {})
+
+    prompt = inputs.get("prompt", "")
+    if not prompt:
+        raise ValueError("'prompt' is required in job input")
+
+    mp4_bytes = _run_inference(
+        prompt=prompt,
+        negative_prompt=inputs.get(
+            "negative_prompt",
+            "worst quality, inconsistent motion, blurry, jittery, distorted, "
+            "watermark, text, static, low quality",
+        ),
+        height=int(inputs.get("height", 512)),
+        width=int(inputs.get("width", 768)),
+        num_frames=int(inputs.get("num_frames", 97)),
+        frame_rate=int(inputs.get("frame_rate", 25)),
+        seed=int(inputs.get("seed", 42)),
+    )
+
+    return {"mp4_b64": base64.b64encode(mp4_bytes).decode("utf-8")}
+
+
+# ---------------------------------------------------------------------------
+# Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    logger.info("Starting on port %d — config: %s", port, _CONFIG_PATH)
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    logger.info("Starting RunPod Serverless worker — config: %s", _CONFIG_PATH)
+    runpod.serverless.start({"handler": handler})

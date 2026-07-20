@@ -75,7 +75,8 @@ jobs:
           REVIEW_SERVER_PORT=8742
           PIPELINE_PUBLIC_URL=http://localhost:8742
           RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
-          RUNPOD_SERVER_URL=${{ secrets.RUNPOD_SERVER_URL }}
+          RUNPOD_ENDPOINT_ID=${{ secrets.RUNPOD_ENDPOINT_ID }}
+          RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           EOF
           echo "✅ .env created"
@@ -84,7 +85,7 @@ jobs:
         if: github.event_name == 'schedule'
         run: |
           echo "🚀 Starting scheduled generation of one video..."
-          PYTHONPATH=src python -m pipeline --config config.json --batch-size 1
+          PYTHONPATH=src python -m pipeline --config config.json
         env:
           PYTHONUNBUFFERED: 1
 
@@ -93,10 +94,15 @@ jobs:
         run: |
           MODE="${{ github.event.inputs.mode }}"
           BATCH="${{ github.event.inputs.batch_size }}"
-          echo "🚀 Running pipeline in mode: $MODE"
+          echo "🚀 Running pipeline in mode: $MODE, batch: $BATCH"
 
           if [ "$MODE" = "batch" ]; then
-            PYTHONPATH=src python -m pipeline --config config.json --batch-size $BATCH
+            if [ "$BATCH" = "1" ]; then
+              # batch-size 1 means single video — skip --batch-size flag
+              PYTHONPATH=src python -m pipeline --config config.json
+            else
+              PYTHONPATH=src python -m pipeline --config config.json --batch-size $BATCH
+            fi
           elif [ "$MODE" = "single" ]; then
             PYTHONPATH=src python -m pipeline --config config.json
           elif [ "$MODE" = "resume-all" ]; then

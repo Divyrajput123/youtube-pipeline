@@ -32,6 +32,16 @@ Add to your `.env`:
 RUNPOD_SERVER_URL=https://abc123-8000.proxy.runpod.net
 ```
 
+Then select RunPod in `config.json`:
+```json
+{
+  "visual_video_provider": "runpod"
+}
+```
+
+To switch back later, change the value to `"kling"`; both credentials can
+remain in `.env` and only the selected provider will be called.
+
 ## Test it
 
 ```bash

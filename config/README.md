@@ -22,6 +22,12 @@ nano config.json
 nano .env
 ```
 
+## Video Provider Toggle
+
+Set `visual_video_provider` in `config.json` to `"kling"` or `"runpod"`. Keep
+both provider credentials in `.env` if you want to switch later; only the
+selected provider is called. The default is `"kling"`.
+
 ## Security Notes
 
 - **Never commit `config.json` or `.env` to version control**

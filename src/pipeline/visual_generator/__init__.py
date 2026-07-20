@@ -45,7 +45,7 @@ import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Literal, Optional, Protocol, runtime_checkable
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -204,61 +204,96 @@ def _generate_placeholder_clip_jpeg(prompt: str) -> bytes:
 
 
 class ViewmaxMCPClient:
-    """Video clip provider using Kling AI API.
+    """Video clip provider selected explicitly by ``visual_video_provider``.
 
-    Calls Kling's text-to-video API to generate original AI video clips.
-    Excellent motion quality for action/superhero content.
-    Cost: ~$0.14/clip on kling-v1-6, ~$0.28/clip on kling-v2.
-
-    Set KLING_API_KEY in .env to your Kling platform API key.
-    Set KLING_MODEL to kling-v1-6 (default) or kling-v2.
-    Falls back to coloured JPEG placeholder when key is not configured.
-
-    Get API key at: https://platform.kling.ai
+    ``"kling"`` uses Kling's text-to-video API; ``"runpod"`` uses the
+    configured LTX-Video RunPod server. Both credentials may remain configured,
+    but this client calls only the selected provider.
     """
 
-    CLIP_DURATION: int = 5     # 5s clips with v1-6 — cheaper for testing
-    CLIP_WIDTH:  int = 1280
+    CLIP_DURATION: int = 5
+    CLIP_WIDTH: int = 1280
     CLIP_HEIGHT: int = 720
 
-    def __init__(self) -> None:
+    def __init__(self, provider: Literal["kling", "runpod"] = "kling") -> None:
+        if provider not in {"kling", "runpod"}:
+            raise ValueError(
+                "visual_video_provider must be either 'kling' or 'runpod', "
+                f"got {provider!r}."
+            )
+
+        self._provider = provider
         self._api_key = os.environ.get("KLING_API_KEY", "").strip()
         self._model = os.environ.get("KLING_MODEL", "kling-v1-6")
-        # Also check for RunPod as fallback
-        self._runpod_url = os.environ.get("RUNPOD_SERVER_URL", "").rstrip("/")
+        # Serverless endpoint credentials
+        self._runpod_endpoint_id = os.environ.get("RUNPOD_ENDPOINT_ID", "").strip()
+        self._runpod_api_key = os.environ.get("RUNPOD_API_KEY", "").strip()
 
-        if self._api_key:
-            logger.info("ViewmaxMCPClient: using Kling AI API (model=%s)", self._model)
-        elif self._runpod_url:
-            logger.info("ViewmaxMCPClient: using RunPod LTX-Video at %s", self._runpod_url)
+        if provider == "kling":
+            if self._api_key:
+                logger.info("ViewmaxMCPClient: selected Kling AI API (model=%s)", self._model)
+            elif is_production_mode():
+                raise ValueError(
+                    "visual_video_provider='kling' requires KLING_API_KEY in production mode."
+                )
+            else:
+                logger.warning(
+                    "ViewmaxMCPClient: Kling selected but KLING_API_KEY is not configured — "
+                    "using placeholder clips."
+                )
+        elif self._runpod_endpoint_id and self._runpod_api_key:
+            logger.info(
+                "ViewmaxMCPClient: selected RunPod Serverless endpoint=%s",
+                self._runpod_endpoint_id,
+            )
+        elif is_production_mode():
+            raise ValueError(
+                "visual_video_provider='runpod' requires RUNPOD_ENDPOINT_ID and "
+                "RUNPOD_API_KEY in production mode."
+            )
         else:
             logger.warning(
-                "ViewmaxMCPClient: no KLING_API_KEY or RUNPOD_SERVER_URL — using placeholder clips."
+                "ViewmaxMCPClient: RunPod selected but RUNPOD_ENDPOINT_ID or "
+                "RUNPOD_API_KEY is not configured — using placeholder clips."
             )
 
     async def generate_clip(self, prompt: str, duration_seconds: int) -> bytes:
-        """Generate a video clip via Kling AI or RunPod fallback."""
-        if self._api_key:
+        """Generate a clip with only the explicitly selected provider."""
+        if self._provider == "kling":
+            if not self._api_key:
+                return _generate_placeholder_clip_jpeg(prompt)
             try:
                 return await self._call_kling(prompt)
             except KlingContentModerationError:
                 raise  # let _generate_single_clip handle rephrasing and retry
             except Exception as exc:
                 exc_str = str(exc)
-                # 402 = out of credits, 401 = invalid key — these are billing issues, re-raise
-                if "402" in exc_str or "401" in exc_str or "payment" in exc_str.lower() or "quota" in exc_str.lower():
-                    raise  # propagate to _generate_single_clip which will notify via Notifier
-                logger.warning("ViewmaxMCPClient: Kling failed ('%s'): %s — using placeholder.", prompt[:60], exc)
+                # Billing failures must reach the caller for notification/retry handling.
+                if (
+                    "402" in exc_str
+                    or "401" in exc_str
+                    or "payment" in exc_str.lower()
+                    or "quota" in exc_str.lower()
+                ):
+                    raise
+                logger.warning(
+                    "ViewmaxMCPClient: Kling failed ('%s'): %s — using placeholder.",
+                    prompt[:60],
+                    exc,
+                )
                 return _generate_placeholder_clip_jpeg(prompt)
 
-        if self._runpod_url:
-            try:
-                return await self._call_ltx_server(prompt)
-            except Exception as exc:
-                logger.warning("ViewmaxMCPClient: RunPod failed ('%s'): %s — using placeholder.", prompt[:60], exc)
-                return _generate_placeholder_clip_jpeg(prompt)
-
-        return _generate_placeholder_clip_jpeg(prompt)
+        if not self._runpod_endpoint_id or not self._runpod_api_key:
+            return _generate_placeholder_clip_jpeg(prompt)
+        try:
+            return await self._call_ltx_server(prompt)
+        except Exception as exc:
+            logger.warning(
+                "ViewmaxMCPClient: RunPod failed ('%s'): %s — using placeholder.",
+                prompt[:60],
+                exc,
+            )
+            return _generate_placeholder_clip_jpeg(prompt)
 
     async def _call_kling(self, prompt: str) -> bytes:
         """Generate video via Kling AI API and return MP4 bytes."""
@@ -335,60 +370,106 @@ class ViewmaxMCPClient:
         raise RuntimeError(f"Kling task {task_id} timed out after 10 minutes")
 
     async def _call_ltx_server(self, prompt: str) -> bytes:
-        """POST to the RunPod LTX-Video server using async job pattern (fallback)."""
+        """Submit a job to the RunPod Serverless endpoint and poll until done.
+
+        Uses the RunPod REST API:
+            POST /v2/{endpoint_id}/run        — submit, returns job_id
+            GET  /v2/{endpoint_id}/status/{id} — poll; terminal statuses:
+                                                  COMPLETED / FAILED / CANCELLED
+        The handler returns {"mp4_b64": "<base64>"} which is decoded here.
+        """
+        import base64 as _b64  # noqa: PLC0415
         import httpx  # noqa: PLC0415
 
         clean_prompt = self._clean_prompt(prompt)
-        logger.info("ViewmaxMCPClient: RunPod generating '%s'", clean_prompt[:80])
+        logger.info("ViewmaxMCPClient: RunPod Serverless generating '%s'", clean_prompt[:80])
 
+        base_url = f"https://api.runpod.ai/v2/{self._runpod_endpoint_id}"
+        headers = {
+            "Authorization": f"Bearer {self._runpod_api_key}",
+            "Content-Type": "application/json",
+        }
         payload = {
-            "prompt": clean_prompt,
-            "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted, watermark, text",
-            "num_frames": 97,
-            "width": 768,
-            "height": 512,
-            "fps": 25,
+            "input": {
+                "prompt": clean_prompt,
+                "negative_prompt": (
+                    "worst quality, inconsistent motion, blurry, jittery, "
+                    "distorted, watermark, text, static, low quality"
+                ),
+                "num_frames": 97,
+                "width": 768,
+                "height": 512,
+                "frame_rate": 25,
+            }
         }
 
+        # Submit job (retry up to 6 times for transient network errors)
         async with httpx.AsyncClient(timeout=30.0) as client:
             for submit_attempt in range(6):
                 try:
-                    resp = await client.post(f"{self._runpod_url}/jobs", json=payload)
+                    resp = await client.post(
+                        f"{base_url}/run",
+                        headers=headers,
+                        json=payload,
+                    )
                     resp.raise_for_status()
                     break
-                except Exception as submit_exc:
+                except Exception as exc:
                     if submit_attempt < 5:
-                        logger.warning("ViewmaxMCPClient: submit attempt %d failed (%s) — retrying in 15s", submit_attempt + 1, submit_exc)
+                        logger.warning(
+                            "ViewmaxMCPClient: submit attempt %d failed (%s) — retrying in 15s",
+                            submit_attempt + 1, exc,
+                        )
                         await asyncio.sleep(15)
                     else:
                         raise
-            job_id = resp.json()["job_id"]
-            logger.info("ViewmaxMCPClient: RunPod job submitted %s", job_id)
 
+            job_id = resp.json()["id"]
+            logger.info("ViewmaxMCPClient: RunPod Serverless job submitted %s", job_id)
+
+            # Poll until terminal status (max 20 minutes = 120 × 10s)
             for attempt in range(120):
                 await asyncio.sleep(10)
                 try:
-                    poll = await client.get(f"{self._runpod_url}/jobs/{job_id}")
+                    poll = await client.get(
+                        f"{base_url}/status/{job_id}",
+                        headers=headers,
+                    )
                     poll.raise_for_status()
                 except Exception as poll_exc:
-                    logger.warning("ViewmaxMCPClient: poll attempt %d failed (%s) — retrying", attempt + 1, poll_exc)
+                    logger.warning(
+                        "ViewmaxMCPClient: poll attempt %d failed (%s) — retrying",
+                        attempt + 1, poll_exc,
+                    )
                     continue
 
-                content_type = poll.headers.get("content-type", "")
-                if "video" in content_type or (len(poll.content) > 1000 and not poll.content[:1].decode("latin-1", errors="replace").startswith("{")):
-                    logger.info("ViewmaxMCPClient: received %d bytes of MP4", len(poll.content))
-                    return poll.content
+                result = poll.json()
+                status = result.get("status", "")
+                logger.info(
+                    "ViewmaxMCPClient: RunPod job %s status=%s (attempt %d)",
+                    job_id, status, attempt + 1,
+                )
 
-                try:
-                    result = poll.json()
-                except Exception:
-                    return poll.content
+                if status == "COMPLETED":
+                    output = result.get("output", {})
+                    mp4_b64 = output.get("mp4_b64", "")
+                    if not mp4_b64:
+                        raise RuntimeError(
+                            f"RunPod job {job_id} completed but output missing mp4_b64"
+                        )
+                    mp4_bytes = _b64.b64decode(mp4_b64)
+                    logger.info(
+                        "ViewmaxMCPClient: RunPod received %d bytes of MP4", len(mp4_bytes)
+                    )
+                    return mp4_bytes
 
-                status = result.get("status")
-                if status == "done":
-                    return poll.content
-                elif status == "error":
-                    raise RuntimeError(f"RunPod job {job_id} failed: {result.get('error')}")
+                if status in {"FAILED", "CANCELLED"}:
+                    error = result.get("error", "unknown error")
+                    raise RuntimeError(
+                        f"RunPod job {job_id} {status.lower()}: {error}"
+                    )
+
+                # IN_QUEUE / IN_PROGRESS — keep polling
 
         raise RuntimeError(f"RunPod job {job_id} timed out after 20 minutes")
 

@@ -177,7 +177,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
     # ------------------------------------------------------------------
     # 8. Visual_Generator
     # ------------------------------------------------------------------
-    viewmax_client = ViewmaxMCPClient()
+    viewmax_client = ViewmaxMCPClient(provider=config.visual_video_provider)
     visual_generator = Visual_Generator(
         viewmax_client=viewmax_client,
         asset_store=asset_store,
