@@ -1,62 +1,140 @@
-# LTX-Video RunPod Server
+# LTX-Video RunPod Serverless Worker
 
-## Deploy on RunPod
+Runs LTX-Video 13B as a RunPod Serverless endpoint. Workers spin up on demand
+and terminate when idle — no persistent pod to manage or pay for between runs.
 
-1. Go to [runpod.io](https://runpod.io) → Pods → Deploy
-2. Choose template: **RunPod PyTorch** (CUDA 12.1)
-3. GPU: **RTX 4090** (24GB VRAM) — $0.69/hr
-4. Click **Deploy**
+---
 
-## Setup on the pod
+## Prerequisites
 
-SSH into the pod, then run:
+- Docker installed locally (for building the image)
+- Docker Hub account (or any container registry)
+- RunPod account with a Network Volume
+
+---
+
+## Step 1 — Create a Network Volume
+
+1. RunPod dashboard → **Storage** → **+ Network Volume**
+2. Name: `ltx-video-weights`
+3. Size: **50 GB minimum** (weights alone are ~32GB)
+4. Region: choose the same region you want the serverless endpoint in
+5. Click **Create**
+
+---
+
+## Step 2 — Populate the volume (one-time)
+
+1. Deploy a **temporary pod** with the volume attached:
+   - Template: **RunPod PyTorch** (any GPU or CPU-only)
+   - Attach your network volume at mount path `/workspace`
+   - Click Deploy
+
+2. SSH into the pod and run:
+   ```bash
+   bash /workspace/setup_volume.sh
+   ```
+   This downloads ~32GB of model weights and patches the LTX-Video code.
+   Takes 15–30 minutes depending on connection speed.
+
+3. **Terminate the temporary pod** when the script finishes.
+   Volume contents are preserved permanently.
+
+---
+
+## Step 3 — Build and push the Docker image
 
 ```bash
-# Install dependencies
-pip install fastapi uvicorn diffusers accelerate transformers imageio[ffmpeg] torch
-
-# Upload server.py (or clone your repo)
-# Then start the server:
-python server.py
+# from the repo root
+docker build -t yourusername/ltx-video-serverless:latest ./runpod_server
+docker push yourusername/ltx-video-serverless:latest
 ```
 
-## Get your pod URL
+Replace `yourusername` with your Docker Hub username.
 
-In RunPod dashboard → your pod → **Connect** → copy the **HTTP port 8000** URL.
-It looks like: `https://abc123-8000.proxy.runpod.net`
+---
 
-## Configure the pipeline
+## Step 4 — Create the Serverless Endpoint
 
-Add to your `.env`:
-```
-RUNPOD_SERVER_URL=https://abc123-8000.proxy.runpod.net
-```
+1. RunPod dashboard → **Serverless** → **+ New Endpoint**
+2. Select **Custom** (not a template)
+3. Settings:
 
-Then select RunPod in `config.json`:
+   | Field | Value |
+   |---|---|
+   | Container image | `yourusername/ltx-video-serverless:latest` |
+   | Network volume | attach `ltx-video-weights` at `/workspace` |
+   | GPU | RTX 4090 or A100 (24GB+ VRAM required) |
+   | Min workers | `0` (scales to zero — no idle cost) |
+   | Max workers | `1` |
+   | Idle timeout | `5` seconds |
+   | Container disk | `10 GB` (image + tmp space) |
+
+4. Click **Deploy**
+5. Copy the **Endpoint ID** (looks like `abc123xyz`)
+
+---
+
+## Step 5 — Add GitHub Secrets
+
+In your GitHub repo → **Settings** → **Secrets and variables** → **Actions**:
+
+| Secret | Value |
+|---|---|
+| `RUNPOD_ENDPOINT_ID` | Endpoint ID from Step 4 |
+| `RUNPOD_API_KEY` | RunPod account API key (Settings → API Keys) |
+
+---
+
+## Step 6 — Switch to RunPod in config.json
+
 ```json
 {
   "visual_video_provider": "runpod"
 }
 ```
 
-To switch back later, change the value to `"kling"`; both credentials can
-remain in `.env` and only the selected provider will be called.
+---
 
-## Test it
+## Testing the endpoint manually
 
 ```bash
-curl -X POST https://abc123-8000.proxy.runpod.net/generate \
+curl -s -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/run" \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Thor warrior lightning hammer storm epic cinematic"}' \
-  --output test_clip.mp4
-
-open test_clip.mp4
+  -d '{
+    "input": {
+      "prompt": "Thor warrior lightning hammer storm epic cinematic",
+      "num_frames": 49,
+      "width": 512,
+      "height": 352
+    }
+  }' | python3 -m json.tool
 ```
+
+Poll the returned `id` for completion:
+```bash
+curl -s "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/status/JOB_ID" \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" | python3 -m json.tool
+```
+
+When `status` is `COMPLETED`, the `output.mp4_b64` field contains the
+base64-encoded MP4. Decode it:
+```bash
+# using Python
+python3 -c "
+import base64, json, sys
+d = json.load(sys.stdin)
+open('test.mp4','wb').write(base64.b64decode(d['output']['mp4_b64']))
+print('Saved test.mp4')
+"
+```
+
+---
 
 ## Cost estimate
 
-- RTX 4090: $0.69/hr
-- 5-second clip: ~1-2 min generation
-- 20 clips per video: ~30-40 min = **~$0.40 per video**
-
-Remember to **stop the pod** when not generating to avoid charges.
+- RTX 4090 serverless: ~\$0.00069/second
+- 5-second clip: ~30–60s generation = **~\$0.02–\$0.04 per clip**
+- 20 clips per video: **~\$0.40–\$0.80 per video**
+- No idle charges between runs (Min workers = 0)

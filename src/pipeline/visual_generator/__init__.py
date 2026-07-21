@@ -598,28 +598,36 @@ async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:
             model="claude-haiku-4-5",
             max_tokens=300,
             system=(
-                "You are an AI video prompt editor. Your job is to rewrite video prompts "
-                "that were rejected by Kling AI's content moderation system because they "
-                "contain copyrighted character names or IP.\n\n"
+                "You are an AI video prompt editor. Rewrite video prompts that were "
+                "rejected by a video generator's content moderation system.\n\n"
                 "RULES:\n"
-                "1. Replace every named fictional character with a visual description of their "
-                "appearance and powers. Examples:\n"
-                "   - Superman → 'a caped hero in a blue suit radiating golden solar energy'\n"
-                "   - The Flash → 'a red-suited speedster trailing crimson lightning'\n"
-                "   - Batman → 'a dark-armored vigilante in a black cape and cowl'\n"
-                "   - Thor → 'a blond-bearded warrior in silver armor wielding a glowing hammer'\n"
-                "   - Iron Man → 'a hero in red-and-gold powered armor with a glowing blue chest reactor'\n"
+                "1. Replace every named fictional character, franchise name, or copyrighted IP "
+                "with a pure visual description. Examples:\n"
+                "   - Superman / Man of Steel → 'a caped hero in a blue suit with golden solar energy'\n"
+                "   - Thor / Odinson → 'a blond-bearded warrior in silver armor with a glowing hammer'\n"
+                "   - Batman / Dark Knight → 'a dark-armored figure in a black cape and cowl'\n"
+                "   - Iron Man / Tony Stark → 'a hero in red-and-gold powered armor'\n"
                 "   - Spider-Man → 'a hero in a red-and-blue web-patterned suit'\n"
-                "   - Hulk → 'a massive green-skinned giant in torn purple shorts'\n"
-                "   - Goku → 'a spiky-haired fighter in an orange martial arts uniform with golden aura'\n"
-                "   - Captain America → 'a hero in a blue star-spangled suit carrying a vibranium shield'\n"
-                "2. Keep the camera direction, action, and style tags exactly the same.\n"
-                "3. Do NOT add any new content — only swap out character names.\n"
-                "4. Return only the rewritten prompt, no explanation."
+                "   - Hulk / Bruce Banner → 'a massive green-skinned giant in torn shorts'\n"
+                "   - Goku / Vegeta → 'a spiky-haired fighter in an orange uniform with golden aura'\n"
+                "   - Captain America → 'a hero in a blue star-spangled suit with a round shield'\n"
+                "   - Mjolnir → 'glowing war hammer'\n"
+                "   - Vibranium → 'advanced alloy'\n"
+                "   - Arc reactor → 'glowing chest device'\n"
+                "   - Metropolis / Gotham → 'a futuristic city'\n"
+                "2. Remove or soften any explicit violence — replace 'destroys', 'kills', 'attacks' "
+                "with 'clashes with', 'confronts', 'faces off against'.\n"
+                "3. Keep the camera direction, motion, and lighting descriptions exactly the same.\n"
+                "4. Return only the rewritten prompt, no explanation.\n"
+                "5. CRITICAL: the output must contain ZERO copyrighted names, character names, "
+                "franchise names, or weapon names."
             ),
             messages=[{
                 "role": "user",
-                "content": f"Rewrite this prompt, replacing character names with visual descriptions:\n\n{original_prompt}",
+                "content": (
+                    f"Rewrite this prompt removing all copyrighted names and softening "
+                    f"any explicit violence:\n\n{original_prompt}"
+                ),
             }],
         )
         rephrased = message.content[0].text.strip().strip('"\'')
@@ -701,35 +709,36 @@ async def _generate_video_prompt_with_claude(
         "camera movement film grain high temporal consistency."
     )
 
-    system_prompt = f"""You are an expert AI video prompt engineer writing Hollywood storyboard prompts for Kling AI.
+    system_prompt = f"""You are an expert AI video prompt engineer writing Hollywood storyboard prompts for a video generator.
 
-CHARACTER BIBLE (never change these):
-- Superman: short black hair, blue suit, RED cape, S symbol, clean-shaven, athletic. Power visuals: GOLDEN SOLAR ENERGY glowing from body, heat vision red beams, solar aura. NO arc reactor — that is Iron Man only.
-- Thor: long blond hair, beard, silver armor, RED cape, glowing silver Mjolnir. Actions: spins Mjolnir / throws Mjolnir / calls down lightning / flies upward / charges / punches / blocks / creates lightning dome. Vary these — never use only "raises/swings Mjolnir."
-- Batman: black armored suit, black cape and cowl, bat symbol
-- Iron Man: red and gold armor, glowing BLUE arc reactor on chest (ONLY Iron Man has this)
-- Spider-Man: red and blue web suit
-- Hulk: massive green muscles, torn purple shorts
-- Goku: spiky black hair, orange gi, golden Super Saiyan aura
-- Captain America: blue suit, red white blue vibranium shield
+CHARACTER VISUAL DESCRIPTIONS (use these ONLY — never use character names or IP):
+- Hero A (Superman-type): short black hair, blue suit, red cape, S-shaped chest symbol, clean-shaven. Power visuals: golden solar energy glowing from body, red heat-vision beams, bright solar aura.
+- Hero B (Thor-type): long blond hair, beard, silver battle armor, red cape, glowing silver war hammer. Actions: spins hammer / throws hammer / calls down lightning / flies upward / charges / punches / blocks / creates lightning dome.
+- Hero C (Batman-type): black armored suit, black cape and cowl, bat-shaped chest symbol.
+- Hero D (Iron Man-type): red and gold powered armor, glowing blue chest reactor.
+- Hero E (Spider-Man-type): red and blue web-patterned full-body suit.
+- Hero F (Hulk-type): massive green-skinned giant, torn purple shorts.
+- Hero G (Goku-type): spiky black hair, orange martial arts uniform, golden energy aura.
+- Hero H (Captain America-type): blue star-spangled suit, round vibranium shield with red-white-blue design.
 
-ENVIRONMENT: Always Metropolis. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
+ENVIRONMENT: Futuristic city. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
 
 MASTER STYLE (append to every prompt unchanged):
 {_MASTER_STYLE}
 
 RULES — keep prompts SIMPLE and FOCUSED:
 1. ONE action per clip — one hero doing one thing clearly
-2. BALANCED hero focus across clips: Thor attacks → Superman blocks → equal clash → Superman counterattacks → Thor recovers → final collision
-3. Vary Thor's actions every clip from his action pool above
-4. Superman power visuals: golden solar energy / heat vision / solar aura — NEVER arc reactor
+2. BALANCED hero focus across clips
+3. Vary Hero B's actions every clip from the action pool above
+4. Hero A power visuals: golden solar energy / heat vision / solar aura — NEVER a chest reactor
 5. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
 6. EMOTION WORDS — forbidden: "widen" (implies fear). Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
 7. Append master style tag at end
 8. Max 280 characters before style tag, present tense, no dialogue
+9. CRITICAL: never use any character names, franchise names, or copyrighted IP — describe only by appearance
 
 EXAMPLE (correct):
-Extreme close-up, slow motion. Superman catches Mjolnir with both hands, golden solar energy erupting from his body as blue lightning races across his forearms. Rain whips past while shattered glass hangs suspended in air. Camera dollies inward slowly as both heroes refuse to give ground. {_MASTER_STYLE}"""
+Extreme close-up, slow motion. The blue-suited caped hero catches the glowing silver hammer with both hands, golden solar energy erupting from his body as blue lightning races across his forearms. Rain whips past while shattered glass hangs suspended in air. Camera dollies inward slowly as both warriors refuse to give ground. {_MASTER_STYLE}"""
 
     # Balanced hero focus: attacker → defender → equal → counterattack → recovery → final
     focus_options = [
