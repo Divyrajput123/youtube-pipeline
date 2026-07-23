@@ -39,6 +39,7 @@ class PipelineStatus(str, Enum):
     SCHEDULED = "Scheduled"
     PUBLISHED = "Published"
     PIPELINE_ERROR = "Pipeline Error"
+    SCRIPT_REJECTED = "Script Rejected"
 
 
 class SubFolder(str, Enum):

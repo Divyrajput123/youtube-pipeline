@@ -570,14 +570,18 @@ class Notifier:
         prompt = event.payload.action_prompt or ""
         approve_url = ""
         edit_url = ""
+        reject_url = ""
 
         # Extract URLs from the action prompt written by ReviewGate.trigger()
         approve_match = re.search(r"Tap to approve:\s+(https?://\S+)", prompt)
-        edit_match    = re.search(r"Tap to (?:request edits|request re-gen):\s+(https?://\S+)", prompt)
+        edit_match    = re.search(r"Tap to (?:edit script|request re-gen):\s+(https?://\S+)", prompt)
+        reject_match  = re.search(r"Tap to reject:\s+(https?://\S+)", prompt)
         if approve_match:
             approve_url = approve_match.group(1)
         if edit_match:
             edit_url = edit_match.group(1)
+        if reject_match:
+            reject_url = reject_match.group(1)
 
         asset_links_html = ""
         if event.payload.asset_links:
@@ -593,7 +597,7 @@ class Notifier:
             )
 
         buttons_html = ""
-        if approve_url or edit_url:
+        if approve_url or edit_url or reject_url:
             btn_style = (
                 "display:inline-block;padding:16px 32px;margin:8px;"
                 "border-radius:12px;font-size:18px;font-weight:bold;"
@@ -604,12 +608,16 @@ class Notifier:
                 if approve_url else ""
             )
             edit_btn = (
-                f'<a href="{edit_url}" style="{btn_style};background:#d97706">✏️ Request Edits</a>'
+                f'<a href="{edit_url}" style="{btn_style};background:#d97706">✏️ Edit Script</a>'
                 if edit_url else ""
+            )
+            reject_btn = (
+                f'<a href="{reject_url}" style="{btn_style};background:#dc2626">🚫 Reject & Regenerate</a>'
+                if reject_url else ""
             )
             buttons_html = (
                 f'<div style="text-align:center;margin:32px 0">'
-                f'{approve_btn}{edit_btn}'
+                f'{approve_btn}{edit_btn}{reject_btn}'
                 f'</div>'
             )
 
