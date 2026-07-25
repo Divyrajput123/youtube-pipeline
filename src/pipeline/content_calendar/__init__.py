@@ -556,6 +556,38 @@ class Content_Calendar:
             dt.isoformat(),
         )
 
+    async def get_scheduled_datetimes(self) -> list[datetime]:
+        """Return all future scheduled_publish_datetimes across all calendar records.
+
+        Used by _find_next_free_slot to avoid scheduling conflicts when YouTube
+        has not yet reflected recently assigned slots.
+
+        Returns:
+            List of UTC-aware datetimes that are in the future.
+        """
+        now = self._now()
+        pages = await _retry_notion(
+            lambda: self._client.query_database(self._db_id),
+            operation_name="get_scheduled_datetimes",
+        )
+        result = []
+        for page in pages:
+            props = page.get("properties", {})
+            dt_prop = props.get("scheduled_publish_datetime", {})
+            date_val = dt_prop.get("date") or {}
+            start = date_val.get("start")
+            if not start:
+                continue
+            try:
+                dt = datetime.fromisoformat(start)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt > now:
+                    result.append(dt)
+            except Exception:
+                pass
+        return result
+
     async def get_batch_topics(
         self,
         batch_id: str,

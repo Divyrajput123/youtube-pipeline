@@ -10,7 +10,7 @@
 #       They are loaded from a RunPod Network Volume mounted at /workspace.
 #       Run setup_volume.sh once on a temporary pod to populate the volume.
 
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 # ---------------------------------------------------------------------------
 # System dependencies
@@ -29,51 +29,59 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # ---------------------------------------------------------------------------
 # LTX-Video repo (code only, no weights)
+# Install to /opt/ltx-video so it's never overwritten by the network volume
+# which mounts at /runpod-volume
 # ---------------------------------------------------------------------------
-RUN git clone --depth 1 https://github.com/Lightricks/LTX-Video.git /workspace/LTX-Video && \
-    cd /workspace/LTX-Video && \
+RUN git clone --depth 1 https://github.com/Lightricks/LTX-Video.git /opt/ltx-video && \
+    cd /opt/ltx-video && \
     pip install --no-cache-dir -e .
 
 # ---------------------------------------------------------------------------
 # Apply inference patches at build time
-# (disables prompt enhancer + fixes generator device mismatch)
+# Only fix the generator device mismatch — safe single-line replacement.
+# The prompt enhancer is disabled via config (prompt_enhancement_words_threshold).
 # ---------------------------------------------------------------------------
 RUN python3 - << 'PYEOF'
-import pathlib
+import pathlib, py_compile, sys
 
-src = pathlib.Path("/workspace/LTX-Video/ltx_video/inference.py").read_text()
+inf_path = pathlib.Path("/opt/ltx-video/ltx_video/inference.py")
+src = inf_path.read_text()
 
-# Disable enhance_prompt
-src = src.replace(
-    "enhance_prompt = (",
-    "enhance_prompt = False  # patched: disabled\nif False and (",
-)
 # Fix generator device mismatch for CPU offload
-src = src.replace(
+patched = src.replace(
     'generator = torch.Generator(device=device).manual_seed(config.seed)',
     'generator = torch.Generator(device="cpu").manual_seed(config.seed)',
 )
 
-pathlib.Path("/workspace/LTX-Video/ltx_video/inference.py").write_text(src)
-print("inference.py patched OK")
+if patched == src:
+    print("WARNING: generator patch target not found — skipping")
+else:
+    inf_path.write_text(patched)
+    print("Generator device patch applied")
+
+# Verify syntax
+try:
+    py_compile.compile(str(inf_path), doraise=True)
+    print("inference.py syntax OK")
+except py_compile.PyCompileError as e:
+    print(f"SYNTAX ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
 PYEOF
 
 # ---------------------------------------------------------------------------
 # Copy handler
 # ---------------------------------------------------------------------------
-COPY server.py /workspace/server.py
+COPY server.py /opt/server.py
 
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
-ENV PYTHONPATH=/workspace/LTX-Video
-ENV HF_HOME=/workspace/huggingface
-ENV HUGGINGFACE_HUB_CACHE=/workspace/huggingface
+ENV PYTHONPATH=/opt/ltx-video
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# Config path written by setup_volume.sh and present on the network volume
-ENV LTX_CONFIG_PATH=/workspace/ltxv-13b-0.9.8-dev-local.yaml
+# VOLUME_ROOT is set to /runpod-volume where the network volume is mounted
+ENV VOLUME_ROOT=/runpod-volume
 
 # ---------------------------------------------------------------------------
-# Entry point — RunPod calls server.py which starts runpod.serverless
+# Entrypoint
 # ---------------------------------------------------------------------------
-CMD ["python3", "/workspace/server.py"]
+CMD ["python3", "/opt/server.py"]

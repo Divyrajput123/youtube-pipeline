@@ -1,6 +1,7 @@
-runpod>=1.7
-diffusers>=0.30,<1
+runpod==1.7.9
+diffusers==0.31.0
 accelerate>=0.33,<1
 transformers>=4.40,<5
 imageio[ffmpeg]>=2.34,<3
-torch>=2.3
+torch>=2.8
+av>=12.0

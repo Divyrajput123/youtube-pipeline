@@ -1,20 +1,8 @@
 """LTX-Video RunPod Serverless handler.
 
-Loads the LTX-Video pipeline ONCE per worker lifetime (model stays cached in
-memory across multiple jobs on the same worker).  RunPod manages worker
-lifecycle — workers spin up on demand and terminate when idle, so there is no
-persistent pod to start, stop, or pay for between runs.
-
-Deploy
-------
-1. Build and push a Docker image containing this file and the LTX-Video repo.
-2. In the RunPod dashboard create a Serverless endpoint pointing to that image.
-3. Copy the endpoint ID into RUNPOD_ENDPOINT_ID in your .env / GitHub Secrets.
-4. Set RUNPOD_API_KEY in your .env / GitHub Secrets.
-
-The pipeline client calls:
-    POST https://api.runpod.ai/v2/{endpoint_id}/run
-    GET  https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}
+All heavy imports (torch, ltx_video) are deferred until the first job arrives.
+This ensures the worker starts cleanly even before the volume is mounted and
+lets RunPod confirm the handler is registered before model loading begins.
 """
 
 from __future__ import annotations
@@ -27,97 +15,117 @@ import pathlib
 import sys
 import tempfile
 
-import torch
 import runpod
 
 # ---------------------------------------------------------------------------
-# Path / env
+# Path / env — set before any ltx_video import
 # ---------------------------------------------------------------------------
-_LTX_REPO = "/workspace/LTX-Video"
+_VOLUME_ROOT = os.environ.get("VOLUME_ROOT", "/runpod-volume")
+_LTX_REPO    = os.environ.get("LTX_REPO", "/opt/ltx-video")
+
 if _LTX_REPO not in sys.path:
     sys.path.insert(0, _LTX_REPO)
 
-os.environ.setdefault("HF_HOME", "/workspace/huggingface")
-os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/workspace/huggingface")
+os.environ.setdefault("HF_HOME",                f"{_VOLUME_ROOT}/huggingface")
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE",  f"{_VOLUME_ROOT}/huggingface")
+os.environ.setdefault("TRANSFORMERS_CACHE",      f"{_VOLUME_ROOT}/huggingface")
+os.environ.setdefault("HF_DATASETS_CACHE",       f"{_VOLUME_ROOT}/huggingface")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = os.environ.get(
-    "LTX_CONFIG_PATH",
-    "/tmp/ltxv-13b-0.9.8-dev-local.yaml",
-)
+# ---------------------------------------------------------------------------
+# Fix yaml config paths at startup — rewrites any stale /workspace/ or
+# /runpod-volume/ prefix to the actual VOLUME_ROOT so the server works
+# regardless of where the volume was originally set up.
+# ---------------------------------------------------------------------------
+def _fix_config_yaml() -> str:
+    """Return path to a corrected yaml config, rewriting stale volume paths
+    and disabling the prompt enhancer."""
+    import re
+    src_path = pathlib.Path(os.environ.get(
+        "LTX_CONFIG_PATH",
+        f"{_VOLUME_ROOT}/ltxv-13b-0.9.8-dev-local.yaml",
+    ))
+
+    if not src_path.exists():
+        raise FileNotFoundError(
+            f"LTX config not found at {src_path}. "
+            f"Is the network volume mounted at {_VOLUME_ROOT}?"
+        )
+
+    text = src_path.read_text()
+
+    # Replace any absolute volume path prefix with current VOLUME_ROOT
+    fixed = re.sub(r"(/workspace|/runpod-volume)/", f"{_VOLUME_ROOT}/", text)
+
+    # Write fixed version to /tmp so we don't modify the volume
+    dst_path = pathlib.Path("/tmp/ltxv-config-fixed.yaml")
+    dst_path.write_text(fixed)
+    logger.info("Config written to %s (VOLUME_ROOT=%s)", dst_path, _VOLUME_ROOT)
+    return str(dst_path)
+
+
+_CONFIG_PATH = _fix_config_yaml()
 
 # ---------------------------------------------------------------------------
-# Global pipeline cache (persists across jobs on the same worker)
+# Lazy globals — populated on first job
 # ---------------------------------------------------------------------------
-_pipeline = None
-_device = "cuda" if torch.cuda.is_available() else "cpu"
+_pipeline        = None
+_infer           = None
+_InferenceConfig = None
+_patches_done    = False
 
 
-# ---------------------------------------------------------------------------
-# Monkey-patch: cache pipeline + disable prompt enhancer
-# ---------------------------------------------------------------------------
+def _ensure_ready() -> None:
+    """Import torch + ltx_video and apply patches on first call."""
+    global _pipeline, _infer, _InferenceConfig, _patches_done
 
-def _apply_patches() -> None:
-    """Patch create_ltx_video_pipeline to cache after first load and disable
-    the prompt enhancer (avoids downloading Florence-2 + Llama)."""
+    if _patches_done:
+        return
+
+    import torch  # noqa: PLC0415
+
+    # ---- patch pipeline caching ----
     import ltx_video.inference as _inf  # noqa: PLC0415
-
     _orig_create = _inf.create_ltx_video_pipeline
 
     def _cached_create(*args, **kwargs):
         global _pipeline
         if _pipeline is not None:
-            logger.info("Returning cached pipeline (skipping reload)")
+            logger.info("Returning cached pipeline")
             return _pipeline
-
-        logger.info("create_ltx_video_pipeline: loading for the first time…")
-
-        for a in args:
-            if isinstance(a, dict):
-                a["prompt_enhancement_words_threshold"] = 99999
-                a["prompt_enhancer_image_caption_model_name_or_path"] = None
-                a["prompt_enhancer_llm_model_name_or_path"] = None
-
-        kwargs.setdefault("prompt_enhancer_image_caption_model_name_or_path", None)
-        kwargs.setdefault("prompt_enhancer_llm_model_name_or_path", None)
-
+        logger.info("Loading pipeline for the first time…")
         result = _orig_create(*args, **kwargs)
         _pipeline = result
         vram = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-        logger.info("Pipeline cached — VRAM: %.1f GB used", vram)
+        logger.info("Pipeline cached — VRAM %.1f GB", vram)
         return result
 
     _inf.create_ltx_video_pipeline = _cached_create
-    logger.info("Pipeline caching patch applied")
 
-
-def _patch_hf() -> None:
-    """Patch hf_hub_download to use a locally cached spatial upscaler."""
+    # ---- patch spatial upscaler lookup ----
     import huggingface_hub.file_download as _fd  # noqa: PLC0415
-    import ltx_video.inference as _ltx_inf  # noqa: PLC0415
+    _orig_dl = _fd.hf_hub_download
 
-    _orig = _fd.hf_hub_download
-
-    def _patched(repo_id=None, filename=None, *args, **kwargs):
+    def _patched_dl(repo_id=None, filename=None, *args, **kwargs):
         if filename and "spatial-upscaler" in filename:
-            local = f"/tmp/{filename}"
+            local = f"{_VOLUME_ROOT}/{filename}"
             if os.path.isfile(local):
                 logger.info("Using cached spatial upscaler: %s", local)
                 return local
-        return _orig(repo_id=repo_id, filename=filename, *args, **kwargs)
+        return _orig_dl(repo_id=repo_id, filename=filename, *args, **kwargs)
 
-    _fd.hf_hub_download = _patched
-    _ltx_inf.hf_hub_download = _patched
-    logger.info("hf_hub_download patched for spatial upscaler")
+    _fd.hf_hub_download = _patched_dl
+    _inf.hf_hub_download = _patched_dl
 
+    from ltx_video.inference import infer, InferenceConfig  # noqa: PLC0415
+    _infer = infer
+    _InferenceConfig = InferenceConfig
 
-_apply_patches()
-_patch_hf()
-
-from ltx_video.inference import infer, InferenceConfig  # noqa: E402, PLC0415
+    _patches_done = True
+    logger.info("LTX-Video ready — config: %s", _CONFIG_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -136,19 +144,19 @@ def _run_inference(
     frame_rate: int = 25,
     seed: int = 42,
 ) -> bytes:
-    """Run LTX-Video inference and return raw MP4 bytes."""
+    import torch  # noqa: PLC0415
+
+    _ensure_ready()
+
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    logger.info(
-        "Generating '%s…' (%d frames %dx%d)",
-        prompt[:60], num_frames, width, height,
-    )
+    logger.info("Generating '%s…' (%d frames %dx%d)", prompt[:60], num_frames, width, height)
 
     try:
         with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
-            config = InferenceConfig(
+            config = _InferenceConfig(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 height=height,
@@ -160,7 +168,7 @@ def _run_inference(
                 offload_to_cpu=False,
                 output_path=tmpdir,
             )
-            infer(config=config)
+            _infer(config=config)
 
             mp4_files = list(pathlib.Path(tmpdir).glob("*.mp4"))
             if not mp4_files:
@@ -173,11 +181,6 @@ def _run_inference(
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.info(
-                "VRAM after inference: %.1f GB / %.1f GB",
-                torch.cuda.memory_allocated() / 1e9,
-                torch.cuda.get_device_properties(0).total_memory / 1e9,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -185,23 +188,8 @@ def _run_inference(
 # ---------------------------------------------------------------------------
 
 def handler(job: dict) -> dict:
-    """RunPod calls this function for every submitted job.
-
-    Expected input fields (all optional except ``prompt``):
-        prompt          str   — scene description
-        negative_prompt str   — things to avoid
-        height          int   — frame height in pixels (default 512)
-        width           int   — frame width in pixels (default 768)
-        num_frames      int   — total frames to generate (default 97)
-        frame_rate      int   — output FPS (default 25)
-        seed            int   — RNG seed (default 42)
-
-    Returns:
-        {"mp4_b64": "<base64-encoded MP4 bytes>"}
-        or raises an exception which RunPod converts to an error response.
-    """
+    """RunPod calls this for every submitted job."""
     inputs = job.get("input", {})
-
     prompt = inputs.get("prompt", "")
     if not prompt:
         raise ValueError("'prompt' is required in job input")
@@ -227,5 +215,5 @@ def handler(job: dict) -> dict:
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    logger.info("Starting RunPod Serverless worker — config: %s", _CONFIG_PATH)
+    logger.info("RunPod Serverless worker starting — VOLUME_ROOT: %s", _VOLUME_ROOT)
     runpod.serverless.start({"handler": handler})

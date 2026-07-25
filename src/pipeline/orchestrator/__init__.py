@@ -1468,6 +1468,14 @@ class Orchestrator:
             logger.warning("_find_next_free_slot: could not query YouTube schedules: %s", exc)
             scheduled_dts = []
 
+        # Also check the local calendar for already-assigned slots — this catches
+        # cases where YouTube hasn't yet reflected a slot assigned moments ago.
+        try:
+            calendar_dts = await self._content_calendar.get_scheduled_datetimes()
+            scheduled_dts = list({*scheduled_dts, *calendar_dts})
+        except Exception as exc:
+            logger.warning("_find_next_free_slot: could not query calendar schedules: %s", exc)
+
         now_utc = _utcnow()
 
         if scheduled_dts:
@@ -1483,18 +1491,28 @@ class Orchestrator:
             base_date = now_utc.date()
             logger.info("_find_next_free_slot: no scheduled videos found, starting from tomorrow")
 
+        # Build a set of already-taken dates (date only, ignoring time)
+        taken_dates = {dt.date() for dt in scheduled_dts}
+
         slots: list[datetime] = []
-        for i in range(n_slots):
-            slot_date = base_date + timedelta(days=i + 1)
+        candidate_date = base_date + timedelta(days=1)
+        while len(slots) < n_slots:
+            # Skip dates that already have a video scheduled
+            if candidate_date in taken_dates:
+                candidate_date += timedelta(days=1)
+                continue
             slot_dt = datetime(
-                slot_date.year, slot_date.month, slot_date.day,
+                candidate_date.year, candidate_date.month, candidate_date.day,
                 publish_hour_utc, publish_minute_utc, 0,
                 tzinfo=timezone.utc,
             )
             # Must be at least 15 minutes in the future (YouTube requirement)
             if slot_dt <= now_utc + timedelta(minutes=15):
-                slot_dt += timedelta(days=1)
+                candidate_date += timedelta(days=1)
+                continue
             slots.append(slot_dt)
+            taken_dates.add(candidate_date)  # mark as taken for subsequent slots
+            candidate_date += timedelta(days=1)
 
         return slots
 
