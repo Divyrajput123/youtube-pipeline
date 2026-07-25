@@ -104,8 +104,8 @@ def _resolve_token(token: str) -> Optional[_PendingReview]:
     return review
 
 
-def get_review_urls(token: str) -> tuple[str, str]:
-    """Return ``(approve_url, edit_url)`` for the given token.
+def get_review_urls(token: str) -> tuple[str, str, str]:
+    """Return ``(approve_url, edit_url, reject_url)`` for the given token.
 
     Uses ``PIPELINE_PUBLIC_URL`` from the environment.
 
@@ -113,12 +113,13 @@ def get_review_urls(token: str) -> tuple[str, str]:
         token: Token returned by :func:`create_review_token`.
 
     Returns:
-        Tuple of ``(approve_url, edit_url)``.
+        Tuple of ``(approve_url, edit_url, reject_url)``.
     """
     base = os.environ.get("PIPELINE_PUBLIC_URL", "http://localhost:8742").rstrip("/")
     return (
         f"{base}/review/approve?token={token}",
         f"{base}/review/edit?token={token}",
+        f"{base}/review/reject?token={token}",
     )
 
 
@@ -128,7 +129,7 @@ def get_review_urls(token: str) -> tuple[str, str]:
 
 def build_review_app() -> "fastapi.FastAPI":  # type: ignore[name-defined]
     """Build and return the FastAPI review webhook app."""
-    from fastapi import FastAPI, HTTPException, Query  # type: ignore[import-untyped]
+    from fastapi import FastAPI, HTTPException, Query, Form  # type: ignore[import-untyped]
     from fastapi.responses import HTMLResponse  # type: ignore[import-untyped]
 
     app = FastAPI(title="AI YouTube Pipeline — Review Webhook", docs_url=None)
@@ -142,20 +143,43 @@ def build_review_app() -> "fastapi.FastAPI":  # type: ignore[name-defined]
         review = _resolve_token(token)
         if review is None:
             raise HTTPException(status_code=404, detail="Token not found or expired.")
-        del _pending[token]   # single-use
+        del _pending[token]
         await review.queue.put("approve")
         logger.info("Review approved via webhook: video_id=%s", review.video_id)
         return _HTML_APPROVED
 
     @app.get("/review/edit", response_class=HTMLResponse)
-    async def request_edit(token: str = Query(...)) -> str:
+    async def show_edit_form(token: str = Query(...)) -> str:
+        """Show the edit form — token stays alive until the form is submitted."""
         review = _resolve_token(token)
         if review is None:
             raise HTTPException(status_code=404, detail="Token not found or expired.")
-        del _pending[token]   # single-use
-        await review.queue.put("edit")
-        logger.info("Edit requested via webhook: video_id=%s", review.video_id)
-        return _HTML_EDIT
+        return _build_edit_form_html(token)
+
+    @app.post("/review/edit", response_class=HTMLResponse)
+    async def submit_edit(
+        token: str = Query(...),
+        edit_instructions: str = Form(...),
+    ) -> str:
+        review = _resolve_token(token)
+        if review is None:
+            raise HTTPException(status_code=404, detail="Token not found or expired.")
+        if not edit_instructions.strip():
+            return _build_edit_form_html(token, error="Please enter your edit instructions.")
+        del _pending[token]
+        await review.queue.put(f"edit:{edit_instructions.strip()}")
+        logger.info("Edit submitted via webhook: video_id=%s", review.video_id)
+        return _HTML_EDIT_SUBMITTED
+
+    @app.get("/review/reject", response_class=HTMLResponse)
+    async def reject(token: str = Query(...)) -> str:
+        review = _resolve_token(token)
+        if review is None:
+            raise HTTPException(status_code=404, detail="Token not found or expired.")
+        del _pending[token]
+        await review.queue.put("reject")
+        logger.info("Script rejected via webhook: video_id=%s", review.video_id)
+        return _HTML_REJECTED
 
     return app
 
@@ -178,33 +202,83 @@ async def start_review_server(port: Optional[int] = None) -> None:
 
     async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            raw = await reader.read(4096)
+            # Read the full request (headers + body up to 32 KB)
+            raw = await reader.read(32768)
             if not raw:
                 return
-            first_line = raw.split(b"\r\n")[0].decode("utf-8", errors="replace")
+
+            # Split head from body
+            head_end = raw.find(b"\r\n\r\n")
+            head_bytes = raw[:head_end] if head_end != -1 else raw
+            body_bytes = raw[head_end + 4:] if head_end != -1 else b""
+
+            first_line = head_bytes.split(b"\r\n")[0].decode("utf-8", errors="replace")
             parts = first_line.split(" ")
             if len(parts) < 2:
                 return
 
-            path = parts[1]          # e.g. /review/approve?token=xxx
-            from urllib.parse import urlparse, parse_qs  # noqa: PLC0415
+            method = parts[0].upper()
+            path = parts[1]
+            from urllib.parse import urlparse, parse_qs, unquote_plus  # noqa: PLC0415
             parsed = urlparse(path)
             params = parse_qs(parsed.query)
-            token  = params.get("token", [""])[0]
+            token = params.get("token", [""])[0]
 
-            if parsed.path in ("/review/approve", "/review/edit"):
+            # ---- GET /review/approve ----
+            if method == "GET" and parsed.path == "/review/approve":
                 review = _resolve_token(token)
                 if review is None:
                     _write_http(writer, 404, "text/html", b"<h1>Token not found or expired.</h1>")
                 else:
                     del _pending[token]
-                    action = "approve" if parsed.path == "/review/approve" else "edit"
-                    # Put on queue from the running event loop
                     loop = asyncio.get_event_loop()
-                    loop.call_soon_threadsafe(review.queue.put_nowait, action)
-                    html = _HTML_APPROVED if action == "approve" else _HTML_EDIT
-                    _write_http(writer, 200, "text/html", html.encode())
-                    logger.info("Review action '%s' received for video_id=%s", action, review.video_id)
+                    loop.call_soon_threadsafe(review.queue.put_nowait, "approve")
+                    _write_http(writer, 200, "text/html", _HTML_APPROVED.encode())
+                    logger.info("Review approved for video_id=%s", review.video_id)
+
+            # ---- GET /review/edit — show form ----
+            elif method == "GET" and parsed.path == "/review/edit":
+                review = _resolve_token(token)
+                if review is None:
+                    _write_http(writer, 404, "text/html", b"<h1>Token not found or expired.</h1>")
+                else:
+                    _write_http(writer, 200, "text/html", _build_edit_form_html(token).encode())
+
+            # ---- POST /review/edit — submit form ----
+            elif method == "POST" and parsed.path == "/review/edit":
+                review = _resolve_token(token)
+                if review is None:
+                    _write_http(writer, 404, "text/html", b"<h1>Token not found or expired.</h1>")
+                else:
+                    # Parse application/x-www-form-urlencoded body
+                    body_str = body_bytes.decode("utf-8", errors="replace")
+                    form_params = parse_qs(body_str)
+                    edit_text = form_params.get("edit_instructions", [""])[0]
+                    edit_text = unquote_plus(edit_text).strip()
+
+                    if not edit_text:
+                        _write_http(
+                            writer, 200, "text/html",
+                            _build_edit_form_html(token, error="Please enter your edit instructions.").encode(),
+                        )
+                    else:
+                        del _pending[token]
+                        loop = asyncio.get_event_loop()
+                        loop.call_soon_threadsafe(review.queue.put_nowait, f"edit:{edit_text}")
+                        _write_http(writer, 200, "text/html", _HTML_EDIT_SUBMITTED.encode())
+                        logger.info("Edit submitted for video_id=%s: %s", review.video_id, edit_text[:80])
+
+            # ---- GET /review/reject ----
+            elif method == "GET" and parsed.path == "/review/reject":
+                review = _resolve_token(token)
+                if review is None:
+                    _write_http(writer, 404, "text/html", b"<h1>Token not found or expired.</h1>")
+                else:
+                    del _pending[token]
+                    loop = asyncio.get_event_loop()
+                    loop.call_soon_threadsafe(review.queue.put_nowait, "reject")
+                    _write_http(writer, 200, "text/html", _HTML_REJECTED.encode())
+                    logger.info("Script rejected for video_id=%s", review.video_id)
 
             elif parsed.path == "/health":
                 body = f'{{"status":"ok","pending":{len(_pending)}}}'.encode()
@@ -272,11 +346,53 @@ _HTML_APPROVED = """<!DOCTYPE html>
   <p>The pipeline will continue to narration&nbsp;generation automatically.</p>
 </div></body></html>"""
 
-_HTML_EDIT = """<!DOCTYPE html>
+
+def _build_edit_form_html(token: str, error: str = "") -> str:
+    """Return the edit form page, optionally with an inline error message."""
+    error_html = (
+        f'<p style="color:#dc2626;margin:0 0 12px;font-size:14px">{error}</p>'
+        if error else ""
+    )
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Edit Requested</title>
+<title>Request Script Edit</title>
+<style>
+  body{{font-family:-apple-system,sans-serif;display:flex;align-items:center;
+       justify-content:center;min-height:100vh;margin:0;background:#fffbeb}}
+  .card{{background:#fff;border-radius:16px;padding:40px;
+         box-shadow:0 4px 24px rgba(0,0,0,.08);max-width:520px;width:90%}}
+  .icon{{font-size:56px;margin-bottom:12px;text-align:center}}
+  h1{{color:#d97706;font-size:24px;margin:0 0 8px;text-align:center}}
+  p.sub{{color:#6b7280;font-size:14px;margin:0 0 20px;text-align:center;line-height:1.5}}
+  textarea{{width:100%;box-sizing:border-box;border:1.5px solid #d1d5db;border-radius:10px;
+            padding:12px;font-size:15px;font-family:inherit;resize:vertical;
+            min-height:120px;outline:none}}
+  textarea:focus{{border-color:#d97706;box-shadow:0 0 0 3px rgba(217,119,6,.15)}}
+  .btn{{display:block;width:100%;margin-top:14px;padding:14px;border:none;
+        border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;
+        text-align:center}}
+  .btn-submit{{background:#d97706;color:#fff}}
+  .btn-submit:hover{{background:#b45309}}
+</style></head>
+<body><div class="card">
+  <div class="icon">✏️</div>
+  <h1>Request Script Edit</h1>
+  <p class="sub">Describe what you'd like changed. The pipeline will revise the script and notify you when it's ready.</p>
+  {error_html}
+  <form method="POST" action="/review/edit?token={token}">
+    <textarea name="edit_instructions" placeholder="e.g. Make the hook more dramatic. Add a section comparing power levels. Remove the part about the arc reactor." required></textarea>
+    <button type="submit" class="btn btn-submit">✏️ Submit Edit Instructions</button>
+  </form>
+</div></body></html>"""
+
+
+_HTML_EDIT_SUBMITTED = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Edit Submitted</title>
 <style>
   body{font-family:-apple-system,sans-serif;display:flex;align-items:center;
        justify-content:center;min-height:100vh;margin:0;background:#fffbeb}
@@ -288,9 +404,29 @@ _HTML_EDIT = """<!DOCTYPE html>
 </style></head>
 <body><div class="card">
   <div class="icon">✏️</div>
-  <h1>Edit Requested</h1>
-  <p>The pipeline will regenerate the script.<br>
-     You can add notes in your Notion&nbsp;calendar.</p>
+  <h1>Edit Instructions Sent!</h1>
+  <p>The pipeline will revise the script using your instructions and email you when the new version is ready.</p>
+</div></body></html>"""
+
+
+_HTML_REJECTED = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Script Rejected</title>
+<style>
+  body{font-family:-apple-system,sans-serif;display:flex;align-items:center;
+       justify-content:center;min-height:100vh;margin:0;background:#fef2f2}
+  .card{background:#fff;border-radius:16px;padding:40px;text-align:center;
+        box-shadow:0 4px 24px rgba(0,0,0,.08);max-width:420px;width:90%}
+  .icon{font-size:72px;margin-bottom:16px}
+  h1{color:#dc2626;font-size:26px;margin:0 0 10px}
+  p{color:#6b7280;margin:0;font-size:16px;line-height:1.5}
+</style></head>
+<body><div class="card">
+  <div class="icon">🚫</div>
+  <h1>Script Rejected</h1>
+  <p>The pipeline will generate a completely new script on a different topic and email you when it's ready.</p>
 </div></body></html>"""
 
 

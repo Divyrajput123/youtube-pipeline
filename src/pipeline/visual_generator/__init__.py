@@ -604,7 +604,7 @@ async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:
                 "1. Replace every named fictional character, franchise name, or copyrighted IP "
                 "with a pure visual description. Examples:\n"
                 "   - Superman / Man of Steel → 'a caped hero in a blue suit with golden solar energy'\n"
-                "   - Thor / Odinson → 'a blond-bearded warrior in silver armor with a glowing hammer'\n"
+                "   - Thor / Odinson → 'a blond-bearded warrior in silver armor with a glowing war hammer'\n"
                 "   - Batman / Dark Knight → 'a dark-armored figure in a black cape and cowl'\n"
                 "   - Iron Man / Tony Stark → 'a hero in red-and-gold powered armor'\n"
                 "   - Spider-Man → 'a hero in a red-and-blue web-patterned suit'\n"
@@ -712,14 +712,14 @@ async def _generate_video_prompt_with_claude(
     system_prompt = f"""You are an expert AI video prompt engineer writing Hollywood storyboard prompts for a video generator.
 
 CHARACTER VISUAL DESCRIPTIONS (use these ONLY — never use character names or IP):
-- Hero A (Superman-type): short black hair, blue suit, red cape, S-shaped chest symbol, clean-shaven. Power visuals: golden solar energy glowing from body, red heat-vision beams, bright solar aura.
-- Hero B (Thor-type): long blond hair, beard, silver battle armor, red cape, glowing silver war hammer. Actions: spins hammer / throws hammer / calls down lightning / flies upward / charges / punches / blocks / creates lightning dome.
-- Hero C (Batman-type): black armored suit, black cape and cowl, bat-shaped chest symbol.
-- Hero D (Iron Man-type): red and gold powered armor, glowing blue chest reactor.
-- Hero E (Spider-Man-type): red and blue web-patterned full-body suit.
-- Hero F (Hulk-type): massive green-skinned giant, torn purple shorts.
-- Hero G (Goku-type): spiky black hair, orange martial arts uniform, golden energy aura.
-- Hero H (Captain America-type): blue star-spangled suit, round vibranium shield with red-white-blue design.
+- Hero A (blue-suit caped type): short black hair, blue suit, red cape, S-shaped chest symbol, clean-shaven. Power visuals: golden solar energy glowing from body, red heat-vision beams, bright solar aura. NO chest reactor.
+- Hero B (armored warrior type): long blond hair, beard, silver battle armor, red cape, glowing silver war hammer. Actions: spins hammer / throws hammer / calls down lightning / flies upward / charges / punches / blocks / creates lightning dome. Vary these every clip.
+- Hero C (dark-armored vigilante type): black armored suit, black cape and cowl, bat-shaped chest symbol.
+- Hero D (powered-armor type): red and gold powered armor, glowing blue chest reactor.
+- Hero E (web-suit type): red and blue web-patterned full-body suit.
+- Hero F (green giant type): massive green-skinned giant, torn purple shorts.
+- Hero G (orange-gi fighter type): spiky black hair, orange martial arts uniform, golden energy aura.
+- Hero H (star-spangled type): blue star-spangled suit, round red-white-blue shield.
 
 ENVIRONMENT: Futuristic city. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
 
@@ -732,13 +732,13 @@ RULES — keep prompts SIMPLE and FOCUSED:
 3. Vary Hero B's actions every clip from the action pool above
 4. Hero A power visuals: golden solar energy / heat vision / solar aura — NEVER a chest reactor
 5. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
-6. EMOTION WORDS — forbidden: "widen" (implies fear). Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
+6. EMOTION WORDS — forbidden: "widen". Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
 7. Append master style tag at end
 8. Max 280 characters before style tag, present tense, no dialogue
-9. CRITICAL: never use any character names, franchise names, or copyrighted IP — describe only by appearance
+9. CRITICAL: output must contain ZERO character names, franchise names, weapon names, or copyrighted IP
 
 EXAMPLE (correct):
-Extreme close-up, slow motion. The blue-suited caped hero catches the glowing silver hammer with both hands, golden solar energy erupting from his body as blue lightning races across his forearms. Rain whips past while shattered glass hangs suspended in air. Camera dollies inward slowly as both warriors refuse to give ground. {_MASTER_STYLE}"""
+Extreme close-up, slow motion. The blue-suited caped hero catches the glowing silver war hammer with both hands, golden solar energy erupting from his body as blue lightning races across his forearms. Rain whips past while shattered glass hangs suspended in air. Camera dollies inward slowly as both warriors refuse to give ground. {_MASTER_STYLE}"""
 
     # Balanced hero focus: attacker → defender → equal → counterattack → recovery → final
     focus_options = [

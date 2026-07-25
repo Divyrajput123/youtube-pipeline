@@ -397,17 +397,135 @@ class Orchestrator:
             asset_links=[script.asset_url] if script.asset_url else [],
         )
         gate1_result = await gate1.poll_until_action()
+        gate1_action = gate1_result.get("action")
         self._emit_log(
             event_type="stage_transition",
             stage_name="review_gate_1",
-            message=f"Review Gate 1 closed: action={gate1_result.get('action')}",
+            message=f"Review Gate 1 closed: action={gate1_action}",
             video_id=video_id,
         )
         await self._flush_log(run_id, video_id)
 
+        # Handle edit: revise the script with the supplied instructions then
+        # re-open Gate 1 for another round of review.
+        if gate1_action == "edit":
+            edit_instructions = gate1_result.get("payload", "").strip()
+            if edit_instructions:
+                logger.info(
+                    "Gate 1 edit: revising script for video_id=%s instructions=%s",
+                    video_id, edit_instructions[:80],
+                )
+                script = await self._run_stage(
+                    stage_name="script_writer_revision",
+                    video_id=video_id,
+                    run_id=run_id,
+                    pre_status=PipelineStatus.SCRIPTING,
+                    coro_factory=lambda: self._script_writer.revise(
+                        script=script,
+                        edits=edit_instructions,
+                        video_id=video_id,
+                    ),
+                )
+                if script.asset_url:
+                    try:
+                        await self._content_calendar.update_asset_link(video_id, "script", script.asset_url)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Could not update revised script_url in Notion: %s", exc)
+                # Re-open Gate 1 for the revised script
+                await self._update_calendar_status(video_id, PipelineStatus.AWAITING_SCRIPT_REVIEW, run_id)
+                gate1b = self.create_review_gate(gate_type="script", video_id=video_id)
+                await gate1b.trigger(asset_links=[script.asset_url] if script.asset_url else [])
+                gate1_result = await gate1b.poll_until_action()
+                gate1_action = gate1_result.get("action")
+                self._emit_log(
+                    event_type="stage_transition",
+                    stage_name="review_gate_1",
+                    message=f"Review Gate 1 (revision) closed: action={gate1_action}",
+                    video_id=video_id,
+                )
+                await self._flush_log(run_id, video_id)
+
+        # Handle reject: restart from topic research to get a completely new topic and script
+        if gate1_action == "reject":
+            logger.info("Gate 1 rejected: restarting from topic research for video_id=%s", video_id)
+
+            # Mark the current Notion record as rejected — keeps the rejected topic
+            # in the calendar so get_batch_topics can exclude it in future runs.
+            await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
+
+            # Fetch fresh exclusion list — SCRIPT_REJECTED records are included
+            # because get_batch_topics only excludes PIPELINE_ERROR.
+            past_topics_reject: list[str] = []
+            try:
+                past_topics_reject = await self._content_calendar.get_batch_topics(
+                    batch_id="", lookback_days=180
+                )
+            except Exception:
+                pass
+
+            new_topics: list[TopicEntry] = await self._run_stage(
+                stage_name="topic_researcher_regen",
+                video_id=video_id,
+                run_id=run_id,
+                pre_status=PipelineStatus.RESEARCHING,
+                coro_factory=lambda: self._topic_researcher.research(
+                    batch_size=1,
+                    excluded_titles=past_topics_reject,
+                    run_id=run_id,
+                ),
+            )
+            top_topic = new_topics[0]
+
+            # Create a NEW Notion record for the new topic/video so the rejected
+            # record is preserved with its rejected topic intact.
+            new_video_id = f"video-{run_id[:8]}r"
+            try:
+                await self._content_calendar.create_record(video_id=new_video_id, batch_id=None)
+                await self._content_calendar.update_topic(new_video_id, top_topic.title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not create new Notion record after reject: %s — reusing video_id", exc)
+                new_video_id = video_id
+                try:
+                    await self._content_calendar.update_topic(new_video_id, top_topic.title)
+                except Exception as exc2:  # noqa: BLE001
+                    logger.warning("Could not update topic in Notion after reject: %s", exc2)
+
+            # Switch to the new video_id for the rest of this run
+            video_id = new_video_id
+
+            script = await self._run_stage(
+                stage_name="script_writer_regen",
+                video_id=video_id,
+                run_id=run_id,
+                pre_status=PipelineStatus.SCRIPTING,
+                coro_factory=lambda: self._script_writer.generate(
+                    topic=top_topic,
+                    style_profile=style_profile,
+                    video_id=video_id,
+                    script_duration_minutes=self._config.script_duration_minutes,
+                ),
+            )
+            if script.asset_url:
+                try:
+                    await self._content_calendar.update_asset_link(video_id, "script", script.asset_url)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not update regenerated script_url in Notion: %s", exc)
+            # Re-open Gate 1 for the new script on the new topic
+            await self._update_calendar_status(video_id, PipelineStatus.AWAITING_SCRIPT_REVIEW, run_id)
+            gate1c = self.create_review_gate(gate_type="script", video_id=video_id)
+            await gate1c.trigger(asset_links=[script.asset_url] if script.asset_url else [])
+            gate1_result = await gate1c.poll_until_action()
+            gate1_action = gate1_result.get("action")
+            self._emit_log(
+                event_type="stage_transition",
+                stage_name="review_gate_1",
+                message=f"Review Gate 1 (new topic) closed: action={gate1_action}",
+                video_id=video_id,
+            )
+            await self._flush_log(run_id, video_id)
+
         # ------------------------------------------------------------------ #
         # Stage 4: Narration_Generator → NarrationAsset                       #
-        # (Gate 1 is handled externally via handle_review_response)            #
         # ------------------------------------------------------------------ #
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 

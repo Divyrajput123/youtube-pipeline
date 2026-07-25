@@ -190,13 +190,14 @@ class ReviewGate:
             gate_type=self._gate_type,
             queue=self._action_queue,
         )
-        approve_url, edit_url = get_review_urls(token)
+        approve_url, edit_url, reject_url = get_review_urls(token)
 
         # 2. Build action prompt with the tap links.
         if self._gate_type == "script":
             action_prompt = (
                 f"Tap to approve:       {approve_url}\n"
-                f"Tap to request edits: {edit_url}\n\n"
+                f"Tap to edit script:   {edit_url}\n"
+                f"Tap to reject:        {reject_url}\n\n"
                 "Or change Notion status to 'Script Approved' / 'Scripting'."
             )
         else:
@@ -290,6 +291,15 @@ class ReviewGate:
         result = next(iter(done)).result()
         if result == "timeout":
             result = "auto_approve" if self._gate_type == "final" else "timeout"
+
+        # edit actions carry the payload after a colon: "edit:Make it funnier"
+        if result.startswith("edit:"):
+            payload = result[len("edit:"):]
+            logger.info(
+                "ReviewGate closed: gate=%s video_id=%s action=edit payload=%s",
+                self._gate_type, self._video_id, payload[:80],
+            )
+            return {"action": "edit", "payload": payload}
 
         logger.info(
             "ReviewGate closed: gate=%s video_id=%s action=%s",
