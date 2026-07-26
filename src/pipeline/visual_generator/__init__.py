@@ -494,8 +494,9 @@ class ViewmaxMCPClient:
         # Collapse multiple spaces
         clean = " ".join(clean.split())
 
-        # Truncate to 200 chars for LTX-Video
-        return clean[:200]
+        # Truncate to 350 chars — LTX-Video handles up to ~400 well.
+        # Front-loaded character descriptions get full weight from the model.
+        return clean[:350]
 
 
 # ---------------------------------------------------------------------------
@@ -631,12 +632,83 @@ async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:
         return original_prompt
 
 
+async def _generate_character_descriptions(script_topic: str, script_body: str) -> dict:
+    """Dynamically generate character visual descriptions from the script topic.
+
+    Calls the LLM once per video to create proper, gender-correct, visually
+    accurate character descriptions based on the actual characters in the script —
+    not a hardcoded list.
+
+    Returns:
+        Dict with keys: hero1_name, hero1_desc, hero2_name, hero2_desc
+    """
+    try:
+        client = build_claude_client()
+        prompt = (
+            f"Video topic: {script_topic}\n"
+            f"Script excerpt: {script_body[:300]}\n\n"
+            "Identify the TWO main characters in this video topic. For each character, "
+            "write a detailed visual description that a video generator can use to "
+            "render them accurately. NEVER use copyrighted names — describe only by appearance.\n\n"
+            "IMPORTANT: Include gender, body type, hair, costume/armor details, "
+            "signature weapon or power visuals, and any distinctive features.\n\n"
+            "Format your response EXACTLY like this (4 lines only):\n"
+            "HERO1_NAME: [short label like 'amazonian warrior' or 'armored titan']\n"
+            "HERO1_DESC: [full visual description, 30-50 words]\n"
+            "HERO2_NAME: [short label]\n"
+            "HERO2_DESC: [full visual description, 30-50 words]\n\n"
+            "Examples:\n"
+            "HERO1_NAME: amazonian warrior princess\n"
+            "HERO1_DESC: Tall athletic woman with long flowing black hair, golden tiara with red star, red and blue armored corset, silver bracelet gauntlets, golden lasso at hip, tanned skin, fierce determined expression\n"
+            "HERO2_NAME: armored purple titan\n"
+            "HERO2_DESC: Massive 8-foot tall purple-skinned muscular male titan, bald head with deep chin ridges, golden armored gauntlet on left hand with glowing gems, dark blue and gold battle armor\n\n"
+            "Output ONLY the 4 lines, nothing else."
+        )
+        result = await client.complete(prompt, max_tokens=300)
+        lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
+
+        hero1_name = "hero 1"
+        hero1_desc = "a powerful superhero in dramatic pose"
+        hero2_name = "hero 2"
+        hero2_desc = "a powerful warrior in battle stance"
+
+        for line in lines:
+            if line.upper().startswith("HERO1_NAME:"):
+                hero1_name = line.split(":", 1)[1].strip()
+            elif line.upper().startswith("HERO1_DESC:"):
+                hero1_desc = line.split(":", 1)[1].strip()
+            elif line.upper().startswith("HERO2_NAME:"):
+                hero2_name = line.split(":", 1)[1].strip()
+            elif line.upper().startswith("HERO2_DESC:"):
+                hero2_desc = line.split(":", 1)[1].strip()
+
+        logger.info(
+            "Character descriptions generated: Hero1='%s' Hero2='%s'",
+            hero1_name, hero2_name,
+        )
+        return {
+            "hero1_name": hero1_name,
+            "hero1_desc": hero1_desc,
+            "hero2_name": hero2_name,
+            "hero2_desc": hero2_desc,
+        }
+    except Exception as exc:
+        logger.warning("Character description generation failed: %s — using generic fallback", exc)
+        return {
+            "hero1_name": "hero 1",
+            "hero1_desc": "a powerful superhero in dramatic pose with distinctive costume",
+            "hero2_name": "hero 2",
+            "hero2_desc": "a powerful warrior in battle stance with unique armor",
+        }
+
+
 async def _generate_video_prompt_with_claude(
     segment: _Segment,
     clip_num: int,
     total_clips: int,
     scene_state: Optional[dict] = None,
     script_topic: str = "",
+    character_descs: Optional[dict] = None,
 ) -> str:
     """Use Claude to generate an optimized video prompt with scene continuity.
 
@@ -701,31 +773,28 @@ async def _generate_video_prompt_with_claude(
         "camera movement film grain high temporal consistency."
     )
 
+    # Use dynamic character descriptions if available, else generic fallback
+    if character_descs is None:
+        character_descs = {
+            "hero1_name": "hero 1",
+            "hero1_desc": "a powerful superhero in dramatic pose",
+            "hero2_name": "hero 2",
+            "hero2_desc": "a powerful warrior in battle stance",
+        }
+
+    h1_desc = character_descs["hero1_desc"]
+    h2_desc = character_descs["hero2_desc"]
+    h1_name = character_descs["hero1_name"]
+    h2_name = character_descs["hero2_name"]
+
     system_prompt = f"""You are an expert AI video prompt engineer writing Hollywood storyboard prompts for a video generator.
 
 VIDEO TOPIC: {script_topic if script_topic else "superhero battle"}
 
-STEP 1 — IDENTIFY HEROES: From the VIDEO TOPIC, identify the two main characters and match each to the closest hero type below. Use ONLY these visual descriptions — never actual character names or IP.
+CHARACTER 1 ({h1_name}): {h1_desc}
+CHARACTER 2 ({h2_name}): {h2_desc}
 
-CHARACTER VISUAL DESCRIPTIONS:
-- Hero A (blue-suit caped type): short black hair, blue suit, red cape, S-shaped chest symbol, clean-shaven. Power visuals: golden solar energy, red heat-vision beams, bright solar aura. NO chest reactor.
-- Hero B (armored warrior type): long blond hair, beard, silver battle armor, red cape, glowing silver war hammer. Actions: spins/throws hammer, calls lightning, flies, charges, punches, blocks.
-- Hero C (dark-armored vigilante type): black armored suit, black cape and cowl, bat-shaped chest symbol. Gadgets, grappling hooks, explosive batarangs.
-- Hero D (powered-armor type): red and gold powered armor, glowing blue chest reactor. Repulsor beams, rockets, HUD displays.
-- Hero E (web-suit type): red and blue web-patterned full-body suit. Web-slinging, acrobatics.
-- Hero F (green giant type): massive green-skinned giant, torn purple shorts. Enormous strength.
-- Hero G (orange-gi fighter type): spiky black hair, orange martial arts uniform, golden energy aura.
-- Hero H (star-spangled type): blue star-spangled suit, round red-white-blue shield.
-
-CHARACTER LOCK — EVERY prompt MUST open with one of these EXACT phrases (copy word-for-word):
-- Hero A opener: "The blue-suited caped hero with short black hair, red cape, and S-shaped chest symbol"
-- Hero B opener: "The blond long-haired bearded warrior in silver battle armor with red cape and glowing war hammer"
-- Hero C opener: "The dark-armored vigilante in black cape and cowl with bat-shaped chest symbol"
-- Hero D opener: "The red-and-gold powered armor hero with glowing blue chest reactor"
-- Hero E opener: "The red-and-blue web-patterned full-body suit hero"
-- Hero F opener: "The massive green-skinned giant in torn purple shorts"
-- Hero G opener: "The spiky black-haired fighter in orange martial arts uniform with golden energy aura"
-- Hero H opener: "The blue star-spangled suited hero with round red-white-blue shield"
+IMPORTANT: Every prompt MUST open by describing the character's full appearance from the description above. Never use names, pronouns, or vague references like "the hero." Always include gender, costume details, and distinctive features so the video generator renders the correct character.
 
 ENVIRONMENT: Futuristic city. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
 
@@ -733,32 +802,25 @@ MASTER STYLE (append to every prompt unchanged):
 {_MASTER_STYLE}
 
 RULES:
-1. ONE action per clip — one hero doing one clear thing
-2. ALTERNATE between the two matched heroes every clip — never show the same hero twice in a row
+1. ONE action per clip — one character doing one clear thing
+2. ALTERNATE between Character 1 and Character 2 every clip
 3. Vary actions — no two clips should show the same move
 4. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
 5. EMOTION WORDS — forbidden: "widen". Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
 6. Append master style tag at end
 7. Max 280 characters before style tag, present tense, no dialogue
-8. CRITICAL: output must contain ZERO character names, franchise names, or copyrighted IP
+8. CRITICAL: output must contain ZERO character names, franchise names, or copyrighted IP — describe ONLY by physical appearance"""
 
-EXAMPLE for Batman vs Iron Man topic (clip 1 — Batman):
-The dark-armored vigilante in black cape and cowl with bat-shaped chest symbol crouches on a rain-slicked rooftop, scanning the skyline. Lightning flashes behind glass skyscrapers. Camera pushes in slowly from behind as the vigilante's expression hardens. {_MASTER_STYLE}
-
-EXAMPLE for Batman vs Iron Man topic (clip 2 — Iron Man):
-The red-and-gold powered armor hero with glowing blue chest reactor hovers above the city, repulsor beams charging with electric-blue light. Rain streaks past the visor as skyscrapers reflect the glow. Low-angle shot looking up as the armor descends. {_MASTER_STYLE}"""
-
-    # Alternate between Hero 1 and Hero 2 based on clip number
-    # Claude is instructed to identify which heroes match the topic
+    # Alternate between Character 1 and Character 2
     if clip_num % 6 == 2 or clip_num % 6 == 4:
-        clip_focus = "EQUAL CLASH — show both heroes at the moment of impact"
-        focus_instruction = "Use Hero 1's CHARACTER LOCK opener, mention Hero 2 in the action"
+        clip_focus = "EQUAL CLASH — show both characters at the moment of impact"
+        focus_instruction = f"Open with Character 1's full description ({h1_desc[:50]}...), mention Character 2 in the action"
     elif clip_num % 2 == 0:
-        clip_focus = "Hero 1 (first character in topic) — show their offensive/defensive action"
-        focus_instruction = "Use Hero 1's CHARACTER LOCK opener"
+        clip_focus = f"CHARACTER 1 ({h1_name}) — show their offensive/defensive action"
+        focus_instruction = f"Open with: {h1_desc}"
     else:
-        clip_focus = "Hero 2 (second character in topic) — show their offensive/defensive action"
-        focus_instruction = "Use Hero 2's CHARACTER LOCK opener"
+        clip_focus = f"CHARACTER 2 ({h2_name}) — show their offensive/defensive action"
+        focus_instruction = f"Open with: {h2_desc}"
 
     user_prompt = f"""VIDEO TOPIC: {script_topic if script_topic else "superhero battle"}
 Segment: "{title}"
@@ -768,11 +830,11 @@ Damage: {damage_level}
 Emotion (ONE word, never "widen"): {emotion_guidance}
 Camera: {camera}
 Focus this clip: {clip_focus}
-CHARACTER LOCK instruction: {focus_instruction}
+Character description to use: {focus_instruction}
 Clip {clip_num + 1}/{total_clips} (global {total_position + 1}/{total_global})
 {"Transition: use clip " + str(min(clip_num, 5) + 2) + " phrase" if clip_num > 0 else "Opening clip — no transition"}
 
-Start with the CHARACTER LOCK opener WORD-FOR-WORD, then describe the action.
+Start by describing the character's FULL appearance, then the action.
 Write ONE prompt. End with the master style tag."""
 
     try:
@@ -1013,72 +1075,45 @@ async def _generate_ai_thumbnail(
     except Exception as exc:
         logger.warning("Claude thumbnail text generation failed: %s", exc)
 
-    # ---- Step 2: Gemini generates cinematic background image ---------------
-    # Uses gemini-2.5-flash-image (Nano Banana) for photorealistic cinematic
-    # thumbnail backgrounds. Falls back to Pollinations if Gemini fails.
+    # ---- Step 2: Pollinations.AI generates cinematic background at native 1280x720
+    # No upscaling needed — Pollinations renders at exact requested resolution.
+    import urllib.parse  # noqa: PLC0415
+    import random as _random  # noqa: PLC0415
+
     image_prompt = (
-        f"Generate a photorealistic cinematic image for a YouTube thumbnail. "
-        f"Ultra realistic live-action Hollywood movie still, NOT cartoon, NOT animated. "
-        f"Split screen composition based on this topic: {title}. "
-        f"Two powerful characters facing off in dramatic poses. "
-        f"Dramatic orange and blue lighting, lens flare, rain, "
-        f"destroyed city skyline in background. "
-        f"IMAX cinematography, shallow depth of field, film grain, 8K detail. "
-        f"Style: like a real movie poster screenshot. No text anywhere in the image."
+        f"Photorealistic cinematic movie still, ultra realistic, NOT cartoon, NOT animated, "
+        f"YouTube thumbnail for: {title}, "
+        f"split screen composition, two powerful characters facing off in dramatic poses, "
+        f"dramatic orange and blue lighting, lens flare, rain drops, "
+        f"destroyed city skyline background, IMAX cinematography, "
+        f"shallow depth of field, film grain, 8K detail, "
+        f"like a real Hollywood movie poster screenshot, no text anywhere"
+    )
+    encoded_prompt = urllib.parse.quote(image_prompt)
+    thumb_seed = _random.randint(0, 99999)
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        f"?width=1280&height=720&model=flux-pro&nologo=true&enhance=true&seed={thumb_seed}"
     )
 
     img_bytes = None
     try:
-        from google import genai as _genai  # noqa: PLC0415
-        from google.genai import types as _genai_types  # noqa: PLC0415
-
-        _img_client = _genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
-        _img_response = _img_client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=image_prompt,
-            config=_genai_types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-            ),
-        )
-        for part in _img_response.candidates[0].content.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                img_bytes = part.inline_data.data
-                logger.info("Gemini thumbnail generated (%d bytes)", len(img_bytes))
-                break
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            resp = await http_client.get(url)
+            resp.raise_for_status()
+            img_bytes = resp.content
+        logger.info("Pollinations thumbnail generated (%d bytes)", len(img_bytes))
     except Exception as exc:
-        logger.warning("Gemini image generation failed: %s — trying Pollinations fallback", exc)
-
-    # Fallback: Pollinations.AI if Gemini failed
-    if not img_bytes:
-        import urllib.parse  # noqa: PLC0415
-        import random as _random  # noqa: PLC0415
-
-        fallback_prompt = (
-            f"Cinematic movie poster, {title}, "
-            f"two powerful characters facing off, dramatic lighting, "
-            f"destroyed city background, vibrant colors, "
-            f"high contrast, no text, professional"
-        )
-        encoded_prompt = urllib.parse.quote(fallback_prompt)
-        thumb_seed = _random.randint(0, 99999)
-        url = (
-            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width=1280&height=720&model=flux-pro&nologo=true&enhance=true&seed={thumb_seed}"
-        )
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as http_client:
-                resp = await http_client.get(url)
-                resp.raise_for_status()
-                img_bytes = resp.content
-            logger.info("Pollinations fallback thumbnail generated (%d bytes)", len(img_bytes))
-        except Exception as exc:
-            logger.warning("Pollinations fallback also failed: %s", exc)
-            return None
+        logger.warning("Pollinations image generation failed: %s", exc)
+        return None
 
     # ---- Step 3: Pillow overlays bold text with drop shadow --------------
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img = img.resize((1280, 720), Image.LANCZOS)
+        # Pollinations delivers at native 1280x720 — no resize needed.
+        # Only resize if the image isn't already the right dimensions.
+        if img.size != (1280, 720):
+            img = img.resize((1280, 720), Image.LANCZOS)
         draw = ImageDraw.Draw(img)
 
         # Try to load a bold font, fall back to default
@@ -1481,6 +1516,11 @@ class Visual_Generator:
 
         results: list[ClipResult] = []
 
+        # Generate dynamic character descriptions from the script topic — called
+        # once per video so all clips share consistent character descriptions.
+        script_body = segments[0].body if segments else ""
+        character_descs = await _generate_character_descriptions(script_topic, script_body)
+
         # Calculate total clips across all segments for scene state continuity
         total_clips_all_segments = sum(
             max(1, round((segment_durations[i] if segment_durations and i < len(segment_durations) else 30.0) / _CUT_EVERY_S))
@@ -1508,7 +1548,8 @@ class Visual_Generator:
                     "total_global_clips": total_clips_all_segments,
                 }
                 prompt = await _generate_video_prompt_with_claude(
-                    segment, clip_num, n_clips, scene_state=scene_state, script_topic=script_topic
+                    segment, clip_num, n_clips, scene_state=scene_state,
+                    script_topic=script_topic, character_descs=character_descs,
                 )
                 global_clip_num += 1
 

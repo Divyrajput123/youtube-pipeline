@@ -942,7 +942,6 @@ class Orchestrator:
                 visual = _reconstruct_visual(video_id)
                 # Resolve Drive URLs so the publisher can upload correctly
                 try:
-                    from pipeline.models import SubFolder  # noqa: PLC0415
                     mp4_url = await self._asset_store.url(
                         video_id=video_id,
                         subfolder=SubFolder.VIDEOS,
@@ -1603,8 +1602,14 @@ class Orchestrator:
 
         # Also check the local calendar for already-assigned slots — this catches
         # cases where YouTube hasn't yet reflected a slot assigned moments ago.
+        calendar_dts: list[datetime] = []
         try:
             calendar_dts = await self._content_calendar.get_scheduled_datetimes()
+            logger.info(
+                "_find_next_free_slot: calendar returned %d scheduled dates: %s",
+                len(calendar_dts),
+                [dt.strftime("%Y-%m-%d") for dt in sorted(calendar_dts)],
+            )
             scheduled_dts = list({*scheduled_dts, *calendar_dts})
         except Exception as exc:
             logger.warning("_find_next_free_slot: could not query calendar schedules: %s", exc)
@@ -1626,6 +1631,10 @@ class Orchestrator:
 
         # Build a set of already-taken dates (date only, ignoring time)
         taken_dates = {dt.date() for dt in scheduled_dts}
+        logger.info(
+            "_find_next_free_slot: taken_dates=%s",
+            sorted(taken_dates),
+        )
 
         slots: list[datetime] = []
         candidate_date = base_date + timedelta(days=1)

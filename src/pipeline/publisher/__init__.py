@@ -170,6 +170,30 @@ class YouTubeClient(Protocol):
         """
         ...
 
+    async def post_pinned_comment(self, youtube_video_id: str, text: str) -> None:
+        """Post a comment on the video and pin it to the top.
+
+        Args:
+            youtube_video_id: The YouTube video ID.
+            text: Comment text (supports YouTube markdown).
+
+        Raises:
+            Exception: Any YouTube API error.
+        """
+        ...
+
+    async def add_to_playlist(self, youtube_video_id: str, playlist_id: str) -> None:
+        """Add a video to a YouTube playlist.
+
+        Args:
+            youtube_video_id: The YouTube video ID.
+            playlist_id: The target playlist ID.
+
+        Raises:
+            Exception: Any YouTube API error.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # YouTubeDataAPIClient — production stub
@@ -346,14 +370,7 @@ class YouTubeDataAPIClient:
 
         def _sync_list() -> list[datetime]:
             scheduled: list[datetime] = []
-            request = self._service.videos().list(
-                part="status",
-                mine=True,
-                myRating=None,
-                maxResults=50,
-            )
-            # YouTube doesn't support filtering by privacyStatus in list(),
-            # so we use search().list() with type=video and eventType=upcoming
+            # Use search().list() with forMine=True to find upcoming/scheduled videos
             search_req = self._service.search().list(
                 part="id",
                 forMine=True,
@@ -428,6 +445,61 @@ class YouTubeDataAPIClient:
 
         loop = _asyncio.get_running_loop()
         return await loop.run_in_executor(None, _sync_list_titles)
+
+    async def post_pinned_comment(self, youtube_video_id: str, text: str) -> None:
+        """Post a comment on the video and pin it to the top."""
+        if self._fallback_mode:
+            logger.info("YouTube fallback: simulated pinned comment on %s", youtube_video_id)
+            return
+
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        def _sync_comment() -> None:
+            # Insert a top-level comment
+            resp = self._service.commentThreads().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "videoId": youtube_video_id,
+                        "topLevelComment": {
+                            "snippet": {
+                                "textOriginal": text,
+                            }
+                        },
+                    }
+                },
+            ).execute()
+            comment_id = resp["snippet"]["topLevelComment"]["id"]
+            logger.info("Posted comment %s on video %s", comment_id, youtube_video_id)
+
+        loop = _asyncio.get_running_loop()
+        await loop.run_in_executor(None, _sync_comment)
+
+    async def add_to_playlist(self, youtube_video_id: str, playlist_id: str) -> None:
+        """Add a video to a YouTube playlist."""
+        if self._fallback_mode:
+            logger.info("YouTube fallback: simulated add to playlist %s", playlist_id)
+            return
+
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        def _sync_add() -> None:
+            self._service.playlistItems().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "playlistId": playlist_id,
+                        "resourceId": {
+                            "kind": "youtube#video",
+                            "videoId": youtube_video_id,
+                        },
+                    }
+                },
+            ).execute()
+            logger.info("Added video %s to playlist %s", youtube_video_id, playlist_id)
+
+        loop = _asyncio.get_running_loop()
+        await loop.run_in_executor(None, _sync_add)
 
     async def _fetch_bytes(self, url_or_path: str) -> bytes:
         """Download content from a Google Drive URL or read a local file path."""
@@ -737,7 +809,41 @@ class Publisher:
                 thumb_exc,
             )
 
-        # --- 3. Update Content Calendar: → Uploading → Unlisted ------------
+        # --- 3. Post pinned comment (best-effort) ----------------------------
+        try:
+            comment_text = (
+                f"🔥 Enjoyed this video? Here's what to do next:\n\n"
+                f"👍 LIKE this video if you want more epic battles\n"
+                f"💬 COMMENT below — who should fight next?\n"
+                f"🔔 SUBSCRIBE and hit the bell for new videos!\n\n"
+                f"#Superhero #Battle #WhoWouldWin"
+            )
+            await self._yt.post_pinned_comment(
+                youtube_video_id=youtube_video_id,
+                text=comment_text,
+            )
+            logger.info("Publisher: pinned comment posted for youtube_video_id=%s", youtube_video_id)
+        except Exception as comment_exc:  # noqa: BLE001
+            logger.warning(
+                "Publisher: pinned comment failed for youtube_video_id=%s (non-fatal): %s",
+                youtube_video_id, comment_exc,
+            )
+
+        # --- 4. Add to playlist (best-effort) ------------------------------
+        playlist_id = os.environ.get("YOUTUBE_PLAYLIST_ID", "")
+        if playlist_id:
+            try:
+                await self._yt.add_to_playlist(
+                    youtube_video_id=youtube_video_id,
+                    playlist_id=playlist_id,
+                )
+                logger.info("Publisher: added to playlist %s", playlist_id)
+            except Exception as pl_exc:  # noqa: BLE001
+                logger.warning(
+                    "Publisher: add to playlist failed (non-fatal): %s", pl_exc,
+                )
+
+        # --- 5. Update Content Calendar: → Uploading → Unlisted ------------
         await self._update_calendar_status(video_id, PipelineStatus.UPLOADING)
         await self._update_calendar_status(video_id, PipelineStatus.UNLISTED)
 
