@@ -2,6 +2,7 @@
   "reference_channel_url": "https://www.youtube.com/@disneykids",
   "voice_id": "BlgEcC0TfWpBak7FmvHW",
   "topic_research_provider": "perplexity",
+  "visual_video_provider": "kling",
   "style_profile_cache_days": 7,
 
   "notification_channels": {

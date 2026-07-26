@@ -4,11 +4,13 @@
 
   "_voice_id_note": "Paid library voice (better quality, requires paid plan): BlgEcC0TfWpBak7FmvHW. Free voice (Roger, works on free plan): CwhRBWXzGAHq8TQ4Fs17",
   "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
-  "topic_research_provider": "perplexity",
+  "topic_research_provider": "tavily",
+  "_visual_video_provider_note": "Choose 'kling' for the Kling API or 'runpod' for your LTX-Video RunPod server.",
+  "visual_video_provider": "runpod",
   "style_profile_cache_days": 7,
 
   "_script_duration_note": "Target script duration in minutes. Word counts are derived at 150 WPM. e.g. 1 min = ~150 words, 3 min = ~450 words, 5 min = ~750 words, 10 min = ~1500 words.",
-  "script_duration_minutes": 2,
+  "script_duration_minutes": 3,
 
   "_weekly_schedule_note": "When batch_size=7, videos are auto-scheduled Mon-Sun at publish_time_utc (24h format). Set timezone_offset_hours to your local UTC offset (e.g. 5.5 for IST, -5 for EST).",
   "weekly_publish_time_hour": 17,

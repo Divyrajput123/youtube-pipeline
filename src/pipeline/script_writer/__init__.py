@@ -742,6 +742,170 @@ class Script_Writer:
 
 
 # ---------------------------------------------------------------------------
+# GeminiClaudeClient — alternate production implementation using Google's
+# Gemini API instead of Anthropic. Satisfies the same ClaudeClient protocol
+# so it's a drop-in replacement wherever ClaudeClient is expected
+# (Script_Writer, Metadata_Generator).
+#
+# Used as a fallback when ANTHROPIC_API_KEY is unavailable/expired or
+# billing is blocked (e.g. RBI card restrictions in India) — Gemini accepts
+# Indian billing methods and has a generous free tier.
+# ---------------------------------------------------------------------------
+
+_GEMINI_MODEL = "gemini-3-flash-preview"
+
+
+class GeminiClaudeClient:
+    """Production LLM client backed by Google's ``google-generativeai`` SDK.
+
+    Implements the same :class:`ClaudeClient` protocol as
+    :class:`AnthropicClaudeClient`, so it can be used as a drop-in
+    replacement for Script_Writer and Metadata_Generator.
+
+    Reads ``GEMINI_API_KEY`` from the environment at construction time.
+
+    Args:
+        api_key: Override the default environment-variable key lookup.
+            Defaults to ``os.environ["GEMINI_API_KEY"]``.
+        model: Gemini model identifier. Defaults to :data:`_GEMINI_MODEL`.
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = _GEMINI_MODEL,
+    ) -> None:
+        resolved_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        self._api_key = resolved_key
+        self._model_name = model
+
+        if is_production_mode():
+            require_production_config(
+                "Google Gemini API",
+                resolved_key if resolved_key and not resolved_key.startswith("REPLACE") else None,
+                "Production mode requires a valid GEMINI_API_KEY. "
+                "Set PIPELINE_MODE=development to use placeholder scripts."
+            )
+
+        if resolved_key and not resolved_key.startswith("REPLACE"):
+            from google import genai  # noqa: PLC0415
+            self._client: Optional["genai.Client"] = genai.Client(api_key=resolved_key)
+        else:
+            self._client = None
+            logger.warning(
+                "Gemini API key not configured — will use placeholder scripts for local dev. "
+                "Set PIPELINE_MODE=production to enforce real API."
+            )
+
+    async def complete(self, prompt: str, max_tokens: int = _DEFAULT_MAX_TOKENS) -> str:
+        """Call the Gemini generateContent API (synchronous SDK; run in an executor).
+
+        For local development, returns placeholder script content when API key is invalid.
+
+        Args:
+            prompt: The user-turn prompt text.
+            max_tokens: Maximum number of tokens in the response.
+
+        Returns:
+            The model's text response, or placeholder content.
+        """
+        if self._client is None:
+            if is_production_mode():
+                raise ValueError(
+                    "Production mode requires a valid Gemini API key. "
+                    "Set PIPELINE_MODE=development to use placeholder scripts."
+                )
+            logger.info("Gemini client not configured — returning placeholder script")
+            return self._get_placeholder_script(prompt)
+
+        from google.genai import types as genai_types  # noqa: PLC0415
+
+        loop = asyncio.get_running_loop()
+
+        def _call() -> str:
+            response = self._client.models.generate_content(  # type: ignore[union-attr]
+                model=self._model_name,
+                contents=prompt,
+                # Disable "thinking" — otherwise the model can spend its entire
+                # token budget reasoning and never emit the actual answer,
+                # especially on longer/more constrained prompts.
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+            return response.text
+
+        # Retry on transient errors (503 overloaded, 429 rate-limited) with
+        # exponential backoff — these are common on preview/experimental models.
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, _CLAUDE_RETRY_ATTEMPTS + 1):
+            try:
+                return await loop.run_in_executor(None, _call)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                exc_str = str(exc)
+                is_transient = "503" in exc_str or "429" in exc_str or "UNAVAILABLE" in exc_str
+                if is_transient and attempt < _CLAUDE_RETRY_ATTEMPTS:
+                    delay = _retry_delay(attempt)
+                    logger.warning(
+                        "Gemini API attempt %d/%d failed (transient: %s) — retrying in %.0fs",
+                        attempt, _CLAUDE_RETRY_ATTEMPTS, exc_str[:100], delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+
+        if is_production_mode():
+            raise ValueError(
+                f"Gemini API call failed in production mode: {last_exc}. "
+                "Check your GEMINI_API_KEY."
+            ) from last_exc
+        logger.warning(f"Gemini API call failed — returning placeholder script: {last_exc}")
+        return self._get_placeholder_script(prompt)
+
+    def _get_placeholder_script(self, prompt: str) -> str:
+        """Delegate to the same placeholder generator used by AnthropicClaudeClient."""
+        return AnthropicClaudeClient._get_placeholder_script(self, prompt)  # type: ignore[arg-type]
+
+
+def build_claude_client(api_key: Optional[str] = None) -> ClaudeClient:
+    """Build the appropriate LLM client based on environment configuration.
+
+    Selection order:
+    1. If ``LLM_PROVIDER=gemini`` is set, use :class:`GeminiClaudeClient`.
+    2. If ``ANTHROPIC_API_KEY`` is missing/placeholder but ``GEMINI_API_KEY``
+       is present, automatically fall back to Gemini.
+    3. Otherwise, use :class:`AnthropicClaudeClient` (default).
+
+    This lets the pipeline keep working when Anthropic billing is blocked
+    (e.g. RBI card restrictions) without any code changes — just set
+    ``GEMINI_API_KEY`` in ``.env``.
+
+    Args:
+        api_key: Optional explicit API key override (passed to whichever
+            client is selected).
+
+    Returns:
+        A :class:`ClaudeClient`-compatible instance.
+    """
+    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    anthropic_configured = bool(anthropic_key) and not anthropic_key.startswith("sk-ant-REPLACE")
+
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    gemini_configured = bool(gemini_key) and not gemini_key.startswith("REPLACE")
+
+    if provider == "gemini" or (not anthropic_configured and gemini_configured):
+        logger.info("build_claude_client: using GeminiClaudeClient")
+        return GeminiClaudeClient(api_key=api_key)
+
+    logger.info("build_claude_client: using AnthropicClaudeClient")
+    return AnthropicClaudeClient(api_key=api_key)
+
+
+# ---------------------------------------------------------------------------
 # Public re-exports
 # ---------------------------------------------------------------------------
 
@@ -749,6 +913,8 @@ __all__ = [
     "AnthropicClaudeClient",
     "ClaudeClient",
     "EmptyEditError",
+    "GeminiClaudeClient",
     "Script_Writer",
     "ScriptGenerationError",
+    "build_claude_client",
 ]

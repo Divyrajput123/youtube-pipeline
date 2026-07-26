@@ -15,7 +15,7 @@ from pipeline.notifier import Notifier, NotifierConfig
 from pipeline.orchestrator import Orchestrator
 from pipeline.publisher import Publisher, YouTubeDataAPIClient
 from pipeline.reference_analyzer import BrowserMCPClient, Reference_Analyzer
-from pipeline.script_writer import AnthropicClaudeClient, Script_Writer
+from pipeline.script_writer import Script_Writer, build_claude_client
 from pipeline.topic_researcher import (
     PerplexityMCPClient,
     TavilyMCPClient,
@@ -156,7 +156,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
     # ------------------------------------------------------------------
     # 6. Script_Writer
     # ------------------------------------------------------------------
-    claude_client = AnthropicClaudeClient()
+    claude_client = build_claude_client()
     script_writer = Script_Writer(
         claude_client=claude_client,
         asset_store=asset_store,
@@ -177,7 +177,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
     # ------------------------------------------------------------------
     # 8. Visual_Generator
     # ------------------------------------------------------------------
-    viewmax_client = ViewmaxMCPClient()
+    viewmax_client = ViewmaxMCPClient(provider=config.visual_video_provider)
     visual_generator = Visual_Generator(
         viewmax_client=viewmax_client,
         asset_store=asset_store,

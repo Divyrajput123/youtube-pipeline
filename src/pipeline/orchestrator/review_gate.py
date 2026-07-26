@@ -203,8 +203,8 @@ class ReviewGate:
         else:
             action_prompt = (
                 f"Tap to approve:        {approve_url}\n"
-                f"Tap to request re-gen: {edit_url}\n\n"
-                "Or change Notion status to approved / regen status."
+                f"Tap to reject:         {reject_url}\n\n"
+                "Or change Notion status to approved."
             )
 
         logger.info(
@@ -332,8 +332,8 @@ class ReviewGate:
             else:
                 if current_status in _GATE2_APPROVE_STATUSES:
                     return "approve"
-                if current_status in _GATE2_REGEN_STATUSES:
-                    return "regenerate"
+                if current_status == PipelineStatus.SCRIPT_REJECTED:
+                    return "reject"
                 if elapsed_td >= _GATE2_AUTO_APPROVE_TIMEOUT:
                     await self._auto_approve_gate2()
                     return "auto_approve"

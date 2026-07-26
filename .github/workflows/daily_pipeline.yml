@@ -75,7 +75,8 @@ jobs:
           REVIEW_SERVER_PORT=8742
           PIPELINE_PUBLIC_URL=http://localhost:8742
           RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
-          RUNPOD_SERVER_URL=${{ secrets.RUNPOD_SERVER_URL }}
+          RUNPOD_ENDPOINT_ID=${{ secrets.RUNPOD_ENDPOINT_ID }}
+          RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           EOF
           echo "✅ .env created"
@@ -97,6 +98,7 @@ jobs:
 
           if [ "$MODE" = "batch" ]; then
             if [ "$BATCH" = "1" ]; then
+              # batch-size 1 means single video — skip --batch-size flag
               PYTHONPATH=src python -m pipeline --config config.json
             else
               PYTHONPATH=src python -m pipeline --config config.json --batch-size $BATCH

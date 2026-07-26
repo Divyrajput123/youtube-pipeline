@@ -419,6 +419,7 @@ class PipelineConfig(BaseModel):
     cross_posting: CrossPostingConfig = Field(default_factory=CrossPostingConfig)
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
+    visual_video_provider: Literal["kling", "runpod"] = "kling"
     style_profile_cache_days: int = Field(..., ge=0)
     script_duration_minutes: float = Field(default=1.0, gt=0, le=30)
 

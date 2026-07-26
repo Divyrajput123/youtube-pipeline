@@ -92,6 +92,24 @@ class LocalContentCalendar:
         self._records[video_id]["scheduled_publish_datetime"] = dt.isoformat()
         self._save()
 
+    async def get_scheduled_datetimes(self) -> list[datetime]:
+        """Return all future scheduled_publish_datetimes across all records."""
+        now = self._now()
+        result = []
+        for rec in self._records.values():
+            dt_str = rec.get("scheduled_publish_datetime")
+            if not dt_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(dt_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt > now:
+                    result.append(dt)
+            except Exception:
+                pass
+        return result
+
     async def get_batch_topics(self, batch_id: str, lookback_days: int) -> list[str]:
         cutoff = self._now() - timedelta(days=lookback_days)
         topics = []

@@ -196,7 +196,6 @@ pip-selfcheck.json
 
 # Pipeline secrets and outputs — never commit these
 secret.json
-config.json
 .env
 data/output/*
 !data/output/.gitkeep
