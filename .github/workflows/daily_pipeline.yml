@@ -1,9 +1,10 @@
 name: Daily YouTube Pipeline
 
 on:
-  # Every day at 3:30 UTC = 9:00 AM IST (UTC+5:30)
+  # Twice daily: 9:00 AM IST and 6:00 PM IST
   schedule:
-    - cron: '30 3 * * *'
+    - cron: '30 3 * * *'   # 3:30 UTC = 9:00 AM IST
+    - cron: '30 12 * * *'  # 12:30 UTC = 6:00 PM IST
 
   # Also allow manual trigger from GitHub Actions UI
   workflow_dispatch:
@@ -64,6 +65,9 @@ jobs:
           NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}
           NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}
           PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}
+          TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          LLM_PROVIDER=gemini
           GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}

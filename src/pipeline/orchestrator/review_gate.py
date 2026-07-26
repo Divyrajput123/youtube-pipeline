@@ -56,13 +56,13 @@ _POLL_INTERVAL_S: float = 60.0
 
 # Gate 1 — Script Review reminder thresholds.
 _GATE1_REMINDER_THRESHOLDS: tuple[timedelta, timedelta, timedelta] = (
-    timedelta(hours=48),
-    timedelta(hours=72),
-    timedelta(hours=96),
+    timedelta(minutes=30),   # single reminder at 30 min before auto-approve at 1h
+    timedelta(minutes=45),
+    timedelta(minutes=55),
 )
 
 # Gate 2 — Final Review auto-approve timeout.
-_GATE2_AUTO_APPROVE_TIMEOUT: timedelta = timedelta(hours=72)
+_GATE2_AUTO_APPROVE_TIMEOUT: timedelta = timedelta(hours=1)
 
 # Maximum number of reminders to send for Gate 1.
 _MAX_REMINDERS: int = 3
@@ -261,7 +261,7 @@ class ReviewGate:
         timeout = (
             _GATE2_AUTO_APPROVE_TIMEOUT.total_seconds()
             if self._gate_type == "final"
-            else 7 * 24 * 3600
+            else _GATE2_AUTO_APPROVE_TIMEOUT.total_seconds()  # same 1h auto-approve for both gates
         )
 
         # Path A: webhook queue
@@ -290,7 +290,7 @@ class ReviewGate:
 
         result = next(iter(done)).result()
         if result == "timeout":
-            result = "auto_approve" if self._gate_type == "final" else "timeout"
+            result = "auto_approve"  # both gates auto-approve after 1 hour
 
         # edit actions carry the payload after a colon: "edit:Make it funnier"
         if result.startswith("edit:"):
