@@ -342,10 +342,17 @@ class PerplexityMCPClient:
 
 
 class TavilyMCPClient:
-    """Tavily MCP search client stub.
+    """Tavily Search API client for trending topic discovery.
 
-    Wire up to the real Tavily MCP server tool calls in production.
+    Uses httpx to call Tavily's REST API directly. Reads the API key from the
+    TAVILY_API_KEY environment variable.
     """
+
+    def __init__(self) -> None:
+        import os  # noqa: PLC0415
+        self._api_key = os.environ.get("TAVILY_API_KEY", "")
+        if not self._api_key:
+            logger.warning("TAVILY_API_KEY not set — search will fail")
 
     async def query_trending(
         self,
@@ -353,10 +360,174 @@ class TavilyMCPClient:
         hours_back: int,
         excluded_titles: list[str] | None = None,
     ) -> list[RawTopicResult]:
-        # TODO: Call Tavily MCP `tavily_search` with query and hours_back filter.
-        raise NotImplementedError(
-            "TavilyMCPClient.query_trending must be wired to the Tavily MCP server."
+        """Call the Tavily Search API to get trending superhero video topics.
+
+        For local development, returns placeholder data if API key is missing or invalid.
+        """
+        import httpx  # noqa: PLC0415
+        import re as _re  # noqa: PLC0415
+
+        if not self._api_key or self._api_key.startswith("tvly-REPLACE"):
+            if is_production_mode():
+                raise ValueError(
+                    "Production mode requires a valid Tavily API key (TAVILY_API_KEY). "
+                    "Set PIPELINE_MODE=development to use placeholder topics."
+                )
+            logger.warning("Tavily API key not configured — returning placeholder topics for local dev")
+            return self._get_placeholder_topics()
+
+        # Map hours_back to Tavily's time_range enum (day/week/month/year).
+        # hours_back defaults to a wide 3-month window for evergreen content.
+        if hours_back <= 24:
+            time_range = "day"
+        elif hours_back <= 24 * 7:
+            time_range = "week"
+        elif hours_back <= 24 * 31:
+            time_range = "month"
+        else:
+            time_range = "year"
+
+        search_query = (
+            '"who would win" OR "vs" superhero battle Marvel DC anime power '
+            "comparison fight breakdown -trailer -review -merchandise -blu-ray"
         )
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.tavily.com/search",
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "query": search_query,
+                        "search_depth": "basic",
+                        "topic": "general",
+                        "time_range": time_range,
+                        "max_results": 20,
+                        "include_answer": False,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                raw_results = data.get("results", [])
+
+                results: list[RawTopicResult] = []
+                for i, item in enumerate(raw_results):
+                    title = (item.get("title") or "").strip()
+                    content = (item.get("content") or "").strip()
+
+                    # Prefer the page title if it looks like a usable video topic;
+                    # otherwise fall back to the first sentence of the content.
+                    candidate = title if title else content[:120]
+                    cleaned = _re.sub(r"^[\d]+[.)]\s*|^[-*]\s*", "", candidate).strip()
+                    cleaned = _re.sub(r"\s*[-|]\s*[^-|]{0,40}$", "", cleaned).strip()  # strip " - SiteName" suffixes
+
+                    # Reject titles that are too short/long or not a real sentence-like phrase.
+                    word_count = len(cleaned.split())
+                    if not cleaned or len(cleaned) > 200 or word_count < 3:
+                        continue
+
+                    # Reject boilerplate / promotional / off-topic pages.
+                    if any(w in cleaned.lower() for w in [
+                        "cannot provide", "unable to", "sorry,", "don't have",
+                        "404", "not found", "login", "sign in", "subscribe now",
+                        "subscribe to", "blu-ray", "4kuhd", "unrated edition",
+                        "oscars guide", "best picture", "earnings explained",
+                        "trailer", "excited for", "bundle on",
+                    ]):
+                        continue
+
+                    # Require the title to actually reference a hero/battle concept —
+                    # otherwise it's likely an unrelated news/merch/review page.
+                    if not any(tag in cleaned.lower() for tag in _RELEVANCE_TAGS):
+                        continue
+
+                    score = float(item.get("score", 0.5))
+                    results.append(
+                        RawTopicResult(
+                            title=cleaned,
+                            search_volume_signal=float(score * 100),
+                            first_seen_hours_ago=float(i * 6),
+                        )
+                    )
+                    if len(results) >= 10:
+                        break
+
+                logger.info(f"TavilyMCPClient: extracted {len(results)} topics from API response")
+                return results
+
+        except httpx.HTTPStatusError as exc:
+            logger.error(f"Tavily API HTTP error: {exc.response.status_code} — {exc.response.text[:200]}")
+            raise Exception(
+                f"Tavily API error: {exc.response.status_code}. "
+                f"Response: {exc.response.text[:200]}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Tavily API call failed: {exc}")
+            if is_production_mode():
+                raise Exception(
+                    f"Tavily API call failed in production mode: {exc}. "
+                    "Set PIPELINE_MODE=development to use placeholder topics."
+                ) from exc
+            logger.warning(f"Tavily API call failed: {exc} - returning placeholder topics")
+            return self._get_placeholder_topics()
+
+    def _get_placeholder_topics(self) -> list[RawTopicResult]:
+        """Return placeholder superhero trending topics for local development."""
+        return [
+            RawTopicResult(
+                title="Spider-Man vs Batman: Who Would Win in a Real Fight",
+                search_volume_signal=95.0,
+                first_seen_hours_ago=2.0,
+            ),
+            RawTopicResult(
+                title="Avengers vs Justice League: Ultimate Crossover Battle",
+                search_volume_signal=88.0,
+                first_seen_hours_ago=5.0,
+            ),
+            RawTopicResult(
+                title="Top 10 Most Powerful Superhero Abilities Ranked",
+                search_volume_signal=82.0,
+                first_seen_hours_ago=8.0,
+            ),
+            RawTopicResult(
+                title="New Marvel Phase 5 Character Powers Explained",
+                search_volume_signal=76.0,
+                first_seen_hours_ago=12.0,
+            ),
+            RawTopicResult(
+                title="Superman vs Thor: Ultimate Power Comparison",
+                search_volume_signal=71.0,
+                first_seen_hours_ago=18.0,
+            ),
+            RawTopicResult(
+                title="DC vs Marvel: Every Major Superhero Crossover Event",
+                search_volume_signal=65.0,
+                first_seen_hours_ago=24.0,
+            ),
+            RawTopicResult(
+                title="Black Panther's Vibranium Powers: Full Breakdown",
+                search_volume_signal=60.0,
+                first_seen_hours_ago=36.0,
+            ),
+            RawTopicResult(
+                title="Invincible vs Omni-Man: Father vs Son Fight Analysis",
+                search_volume_signal=55.0,
+                first_seen_hours_ago=48.0,
+            ),
+            RawTopicResult(
+                title="Every Time a Hero Switched Sides in Comics History",
+                search_volume_signal=50.0,
+                first_seen_hours_ago=60.0,
+            ),
+            RawTopicResult(
+                title="The Boys Homelander vs All Superheroes: Power Level",
+                search_volume_signal=45.0,
+                first_seen_hours_ago=70.0,
+            ),
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,7 @@ from pipeline.models import (
     VisualAsset,
 )
 from pipeline.notifier import Notifier
+from pipeline.script_writer import build_claude_client
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +111,13 @@ class ViewmaxClient(Protocol):
     can substitute a mock without requiring a live Viewmax connection.
     """
 
-    async def generate_clip(self, prompt: str, duration_seconds: int) -> bytes:
+    async def generate_clip(self, prompt: str, duration_seconds: int, seed: int = -1) -> bytes:
         """Generate a video clip for *prompt* of *duration_seconds* length.
 
         Args:
             prompt: Natural-language description of the desired visual scene.
             duration_seconds: Requested clip length in seconds.
+            seed: Random seed for reproducibility. -1 = random.
 
         Returns:
             Raw MP4 bytes for the generated clip.
@@ -257,7 +259,7 @@ class ViewmaxMCPClient:
                 "RUNPOD_API_KEY is not configured — using placeholder clips."
             )
 
-    async def generate_clip(self, prompt: str, duration_seconds: int) -> bytes:
+    async def generate_clip(self, prompt: str, duration_seconds: int, seed: int = -1) -> bytes:
         """Generate a clip with only the explicitly selected provider."""
         if self._provider == "kling":
             if not self._api_key:
@@ -286,7 +288,7 @@ class ViewmaxMCPClient:
         if not self._runpod_endpoint_id or not self._runpod_api_key:
             return _generate_placeholder_clip_jpeg(prompt)
         try:
-            return await self._call_ltx_server(prompt)
+            return await self._call_ltx_server(prompt, seed=seed)
         except Exception as exc:
             logger.warning(
                 "ViewmaxMCPClient: RunPod failed ('%s'): %s — using placeholder.",
@@ -369,7 +371,7 @@ class ViewmaxMCPClient:
 
         raise RuntimeError(f"Kling task {task_id} timed out after 10 minutes")
 
-    async def _call_ltx_server(self, prompt: str) -> bytes:
+    async def _call_ltx_server(self, prompt: str, seed: int = -1) -> bytes:
         """Submit a job to the RunPod Serverless endpoint and poll until done.
 
         Uses the RunPod REST API:
@@ -382,7 +384,7 @@ class ViewmaxMCPClient:
         import httpx  # noqa: PLC0415
 
         clean_prompt = self._clean_prompt(prompt)
-        logger.info("ViewmaxMCPClient: RunPod Serverless generating '%s'", clean_prompt[:80])
+        logger.info("ViewmaxMCPClient: RunPod Serverless generating '%s' seed=%d", clean_prompt[:80], seed)
 
         base_url = f"https://api.runpod.ai/v2/{self._runpod_endpoint_id}"
         headers = {
@@ -397,9 +399,10 @@ class ViewmaxMCPClient:
                     "distorted, watermark, text, static, low quality"
                 ),
                 "num_frames": 97,
-                "width": 768,
-                "height": 512,
+                "width": 1280,
+                "height": 720,
                 "frame_rate": 25,
+                "seed": seed,
             }
         }
 
@@ -428,48 +431,51 @@ class ViewmaxMCPClient:
             logger.info("ViewmaxMCPClient: RunPod Serverless job submitted %s", job_id)
 
             # Poll until terminal status (max 20 minutes = 120 × 10s)
-            for attempt in range(120):
-                await asyncio.sleep(10)
-                try:
-                    poll = await client.get(
-                        f"{base_url}/status/{job_id}",
-                        headers=headers,
-                    )
-                    poll.raise_for_status()
-                except Exception as poll_exc:
-                    logger.warning(
-                        "ViewmaxMCPClient: poll attempt %d failed (%s) — retrying",
-                        attempt + 1, poll_exc,
-                    )
-                    continue
-
-                result = poll.json()
-                status = result.get("status", "")
-                logger.info(
-                    "ViewmaxMCPClient: RunPod job %s status=%s (attempt %d)",
-                    job_id, status, attempt + 1,
-                )
-
-                if status == "COMPLETED":
-                    output = result.get("output", {})
-                    mp4_b64 = output.get("mp4_b64", "")
-                    if not mp4_b64:
-                        raise RuntimeError(
-                            f"RunPod job {job_id} completed but output missing mp4_b64"
+            # Use a separate client with a longer timeout for polling — the COMPLETED
+            # response includes the full base64 MP4 (~2MB) which can take >30s to receive.
+            async with httpx.AsyncClient(timeout=180.0) as poll_client:
+                for attempt in range(120):
+                    await asyncio.sleep(10)
+                    try:
+                        poll = await poll_client.get(
+                            f"{base_url}/status/{job_id}",
+                            headers=headers,
                         )
-                    mp4_bytes = _b64.b64decode(mp4_b64)
+                        poll.raise_for_status()
+                    except Exception as poll_exc:
+                        logger.warning(
+                            "ViewmaxMCPClient: poll attempt %d failed (%s) — retrying",
+                            attempt + 1, poll_exc,
+                        )
+                        continue
+
+                    result = poll.json()
+                    status = result.get("status", "")
                     logger.info(
-                        "ViewmaxMCPClient: RunPod received %d bytes of MP4", len(mp4_bytes)
-                    )
-                    return mp4_bytes
-
-                if status in {"FAILED", "CANCELLED"}:
-                    error = result.get("error", "unknown error")
-                    raise RuntimeError(
-                        f"RunPod job {job_id} {status.lower()}: {error}"
+                        "ViewmaxMCPClient: RunPod job %s status=%s (attempt %d)",
+                        job_id, status, attempt + 1,
                     )
 
-                # IN_QUEUE / IN_PROGRESS — keep polling
+                    if status == "COMPLETED":
+                        output = result.get("output", {})
+                        mp4_b64 = output.get("mp4_b64", "")
+                        if not mp4_b64:
+                            raise RuntimeError(
+                                f"RunPod job {job_id} completed but output missing mp4_b64"
+                            )
+                        mp4_bytes = _b64.b64decode(mp4_b64)
+                        logger.info(
+                            "ViewmaxMCPClient: RunPod received %d bytes of MP4", len(mp4_bytes)
+                        )
+                        return mp4_bytes
+
+                    if status in {"FAILED", "CANCELLED"}:
+                        error = result.get("error", "unknown error")
+                        raise RuntimeError(
+                            f"RunPod job {job_id} {status.lower()}: {error}"
+                        )
+
+                    # IN_QUEUE / IN_PROGRESS — keep polling
 
         raise RuntimeError(f"RunPod job {job_id} timed out after 20 minutes")
 
@@ -586,51 +592,37 @@ async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:
     Returns:
         A rephrased prompt, or the original if Claude is unavailable.
     """
-    import anthropic  # noqa: PLC0415
-
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set")
-
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=300,
-            system=(
-                "You are an AI video prompt editor. Rewrite video prompts that were "
-                "rejected by a video generator's content moderation system.\n\n"
-                "RULES:\n"
-                "1. Replace every named fictional character, franchise name, or copyrighted IP "
-                "with a pure visual description. Examples:\n"
-                "   - Superman / Man of Steel → 'a caped hero in a blue suit with golden solar energy'\n"
-                "   - Thor / Odinson → 'a blond-bearded warrior in silver armor with a glowing war hammer'\n"
-                "   - Batman / Dark Knight → 'a dark-armored figure in a black cape and cowl'\n"
-                "   - Iron Man / Tony Stark → 'a hero in red-and-gold powered armor'\n"
-                "   - Spider-Man → 'a hero in a red-and-blue web-patterned suit'\n"
-                "   - Hulk / Bruce Banner → 'a massive green-skinned giant in torn shorts'\n"
-                "   - Goku / Vegeta → 'a spiky-haired fighter in an orange uniform with golden aura'\n"
-                "   - Captain America → 'a hero in a blue star-spangled suit with a round shield'\n"
-                "   - Mjolnir → 'glowing war hammer'\n"
-                "   - Vibranium → 'advanced alloy'\n"
-                "   - Arc reactor → 'glowing chest device'\n"
-                "   - Metropolis / Gotham → 'a futuristic city'\n"
-                "2. Remove or soften any explicit violence — replace 'destroys', 'kills', 'attacks' "
-                "with 'clashes with', 'confronts', 'faces off against'.\n"
-                "3. Keep the camera direction, motion, and lighting descriptions exactly the same.\n"
-                "4. Return only the rewritten prompt, no explanation.\n"
-                "5. CRITICAL: the output must contain ZERO copyrighted names, character names, "
-                "franchise names, or weapon names."
-            ),
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Rewrite this prompt removing all copyrighted names and softening "
-                    f"any explicit violence:\n\n{original_prompt}"
-                ),
-            }],
+        client = build_claude_client()
+        prompt = (
+            "You are an AI video prompt editor. Rewrite video prompts that were "
+            "rejected by a video generator's content moderation system.\n\n"
+            "RULES:\n"
+            "1. Replace every named fictional character, franchise name, or copyrighted IP "
+            "with a pure visual description. Examples:\n"
+            "   - Superman / Man of Steel → 'a caped hero in a blue suit with golden solar energy'\n"
+            "   - Thor / Odinson → 'a blond-bearded warrior in silver armor with a glowing war hammer'\n"
+            "   - Batman / Dark Knight → 'a dark-armored figure in a black cape and cowl'\n"
+            "   - Iron Man / Tony Stark → 'a hero in red-and-gold powered armor'\n"
+            "   - Spider-Man → 'a hero in a red-and-blue web-patterned suit'\n"
+            "   - Hulk / Bruce Banner → 'a massive green-skinned giant in torn shorts'\n"
+            "   - Goku / Vegeta → 'a spiky-haired fighter in an orange uniform with golden aura'\n"
+            "   - Captain America → 'a hero in a blue star-spangled suit with a round shield'\n"
+            "   - Mjolnir → 'glowing war hammer'\n"
+            "   - Vibranium → 'advanced alloy'\n"
+            "   - Arc reactor → 'glowing chest device'\n"
+            "   - Metropolis / Gotham → 'a futuristic city'\n"
+            "2. Remove or soften any explicit violence — replace 'destroys', 'kills', 'attacks' "
+            "with 'clashes with', 'confronts', 'faces off against'.\n"
+            "3. Keep the camera direction, motion, and lighting descriptions exactly the same.\n"
+            "4. Return only the rewritten prompt, no explanation.\n"
+            "5. CRITICAL: the output must contain ZERO copyrighted names, character names, "
+            "franchise names, or weapon names.\n\n"
+            f"Rewrite this prompt removing all copyrighted names and softening "
+            f"any explicit violence:\n\n{original_prompt}"
         )
-        rephrased = message.content[0].text.strip().strip('"\'')
+        result = await client.complete(prompt, max_tokens=300)
+        rephrased = result.strip().strip('"\'')
         logger.info("Prompt rephrased for moderation: %s", rephrased[:80])
         return rephrased[:400]
 
@@ -644,13 +636,13 @@ async def _generate_video_prompt_with_claude(
     clip_num: int,
     total_clips: int,
     scene_state: Optional[dict] = None,
+    script_topic: str = "",
 ) -> str:
     """Use Claude to generate an optimized video prompt with scene continuity.
 
     Tracks scene phase (opening/escalation/climax/resolution) across clips,
     varies character emotions, and uses proper filmmaking terminology.
     """
-    import anthropic  # noqa: PLC0415
     import re as _re  # noqa: PLC0415
 
     body = _re.sub(r"\[/?[a-zA-Z]+\]", "", segment.body).strip()
@@ -711,78 +703,91 @@ async def _generate_video_prompt_with_claude(
 
     system_prompt = f"""You are an expert AI video prompt engineer writing Hollywood storyboard prompts for a video generator.
 
-CHARACTER VISUAL DESCRIPTIONS (use these ONLY — never use character names or IP):
-- Hero A (blue-suit caped type): short black hair, blue suit, red cape, S-shaped chest symbol, clean-shaven. Power visuals: golden solar energy glowing from body, red heat-vision beams, bright solar aura. NO chest reactor.
-- Hero B (armored warrior type): long blond hair, beard, silver battle armor, red cape, glowing silver war hammer. Actions: spins hammer / throws hammer / calls down lightning / flies upward / charges / punches / blocks / creates lightning dome. Vary these every clip.
-- Hero C (dark-armored vigilante type): black armored suit, black cape and cowl, bat-shaped chest symbol.
-- Hero D (powered-armor type): red and gold powered armor, glowing blue chest reactor.
-- Hero E (web-suit type): red and blue web-patterned full-body suit.
-- Hero F (green giant type): massive green-skinned giant, torn purple shorts.
+VIDEO TOPIC: {script_topic if script_topic else "superhero battle"}
+
+STEP 1 — IDENTIFY HEROES: From the VIDEO TOPIC, identify the two main characters and match each to the closest hero type below. Use ONLY these visual descriptions — never actual character names or IP.
+
+CHARACTER VISUAL DESCRIPTIONS:
+- Hero A (blue-suit caped type): short black hair, blue suit, red cape, S-shaped chest symbol, clean-shaven. Power visuals: golden solar energy, red heat-vision beams, bright solar aura. NO chest reactor.
+- Hero B (armored warrior type): long blond hair, beard, silver battle armor, red cape, glowing silver war hammer. Actions: spins/throws hammer, calls lightning, flies, charges, punches, blocks.
+- Hero C (dark-armored vigilante type): black armored suit, black cape and cowl, bat-shaped chest symbol. Gadgets, grappling hooks, explosive batarangs.
+- Hero D (powered-armor type): red and gold powered armor, glowing blue chest reactor. Repulsor beams, rockets, HUD displays.
+- Hero E (web-suit type): red and blue web-patterned full-body suit. Web-slinging, acrobatics.
+- Hero F (green giant type): massive green-skinned giant, torn purple shorts. Enormous strength.
 - Hero G (orange-gi fighter type): spiky black hair, orange martial arts uniform, golden energy aura.
 - Hero H (star-spangled type): blue star-spangled suit, round red-white-blue shield.
+
+CHARACTER LOCK — EVERY prompt MUST open with one of these EXACT phrases (copy word-for-word):
+- Hero A opener: "The blue-suited caped hero with short black hair, red cape, and S-shaped chest symbol"
+- Hero B opener: "The blond long-haired bearded warrior in silver battle armor with red cape and glowing war hammer"
+- Hero C opener: "The dark-armored vigilante in black cape and cowl with bat-shaped chest symbol"
+- Hero D opener: "The red-and-gold powered armor hero with glowing blue chest reactor"
+- Hero E opener: "The red-and-blue web-patterned full-body suit hero"
+- Hero F opener: "The massive green-skinned giant in torn purple shorts"
+- Hero G opener: "The spiky black-haired fighter in orange martial arts uniform with golden energy aura"
+- Hero H opener: "The blue star-spangled suited hero with round red-white-blue shield"
 
 ENVIRONMENT: Futuristic city. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
 
 MASTER STYLE (append to every prompt unchanged):
 {_MASTER_STYLE}
 
-RULES — keep prompts SIMPLE and FOCUSED:
-1. ONE action per clip — one hero doing one thing clearly
-2. BALANCED hero focus across clips
-3. Vary Hero B's actions every clip from the action pool above
-4. Hero A power visuals: golden solar energy / heat vision / solar aura — NEVER a chest reactor
-5. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
-6. EMOTION WORDS — forbidden: "widen". Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
-7. Append master style tag at end
-8. Max 280 characters before style tag, present tense, no dialogue
-9. CRITICAL: output must contain ZERO character names, franchise names, weapon names, or copyrighted IP
+RULES:
+1. ONE action per clip — one hero doing one clear thing
+2. ALTERNATE between the two matched heroes every clip — never show the same hero twice in a row
+3. Vary actions — no two clips should show the same move
+4. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
+5. EMOTION WORDS — forbidden: "widen". Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
+6. Append master style tag at end
+7. Max 280 characters before style tag, present tense, no dialogue
+8. CRITICAL: output must contain ZERO character names, franchise names, or copyrighted IP
 
-EXAMPLE (correct):
-Extreme close-up, slow motion. The blue-suited caped hero catches the glowing silver war hammer with both hands, golden solar energy erupting from his body as blue lightning races across his forearms. Rain whips past while shattered glass hangs suspended in air. Camera dollies inward slowly as both warriors refuse to give ground. {_MASTER_STYLE}"""
+EXAMPLE for Batman vs Iron Man topic (clip 1 — Batman):
+The dark-armored vigilante in black cape and cowl with bat-shaped chest symbol crouches on a rain-slicked rooftop, scanning the skyline. Lightning flashes behind glass skyscrapers. Camera pushes in slowly from behind as the vigilante's expression hardens. {_MASTER_STYLE}
 
-    # Balanced hero focus: attacker → defender → equal → counterattack → recovery → final
-    focus_options = [
-        "ATTACKER hero only — show the offensive move",
-        "DEFENDER hero only — show the block/catch/reaction",
-        "EQUAL CLASH — both heroes at the moment of impact",
-        "COUNTERATTACKER hero only — the other hero pushes back",
-        "RECOVERY hero only — show fatigue but determination",
-        "FINAL COLLISION — both heroes, climactic moment",
-    ]
-    clip_focus = focus_options[clip_num % len(focus_options)]
+EXAMPLE for Batman vs Iron Man topic (clip 2 — Iron Man):
+The red-and-gold powered armor hero with glowing blue chest reactor hovers above the city, repulsor beams charging with electric-blue light. Rain streaks past the visor as skyscrapers reflect the glow. Low-angle shot looking up as the armor descends. {_MASTER_STYLE}"""
 
-    user_prompt = f"""Segment: "{title}"
-Action: "{body_chunk}"
+    # Alternate between Hero 1 and Hero 2 based on clip number
+    # Claude is instructed to identify which heroes match the topic
+    if clip_num % 6 == 2 or clip_num % 6 == 4:
+        clip_focus = "EQUAL CLASH — show both heroes at the moment of impact"
+        focus_instruction = "Use Hero 1's CHARACTER LOCK opener, mention Hero 2 in the action"
+    elif clip_num % 2 == 0:
+        clip_focus = "Hero 1 (first character in topic) — show their offensive/defensive action"
+        focus_instruction = "Use Hero 1's CHARACTER LOCK opener"
+    else:
+        clip_focus = "Hero 2 (second character in topic) — show their offensive/defensive action"
+        focus_instruction = "Use Hero 2's CHARACTER LOCK opener"
+
+    user_prompt = f"""VIDEO TOPIC: {script_topic if script_topic else "superhero battle"}
+Segment: "{title}"
+Script action (FOLLOW THIS CLOSELY): "{body_chunk}"
 Scene phase: {scene_phase}
-Damage to show (escalate from this, don't repeat): {damage_level}
-Emotion (pick ONE unique word, NEVER use widen): {emotion_guidance}
+Damage: {damage_level}
+Emotion (ONE word, never "widen"): {emotion_guidance}
 Camera: {camera}
-Focus: {clip_focus}
+Focus this clip: {clip_focus}
+CHARACTER LOCK instruction: {focus_instruction}
 Clip {clip_num + 1}/{total_clips} (global {total_position + 1}/{total_global})
-{"Transition phrase: use clip " + str(min(clip_num, 5) + 2) + " phrase from the list" if clip_num > 0 else "Opening clip — no transition, establish the scene"}
+{"Transition: use clip " + str(min(clip_num, 5) + 2) + " phrase" if clip_num > 0 else "Opening clip — no transition"}
 
-Write ONE storyboard prompt. Keep it simple and focused. End with the master style tag."""
+Start with the CHARACTER LOCK opener WORD-FOR-WORD, then describe the action.
+Write ONE prompt. End with the master style tag."""
 
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set")
-
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-haiku-4-5",
+        client = build_claude_client()
+        result = await client.complete(
+            f"{system_prompt}\n\n{user_prompt}",
             max_tokens=200,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
         )
-        prompt = message.content[0].text.strip().strip('"\'')
+        prompt = result.strip().strip('"\'')
         logger.info("Claude prompt clip %d/%d: %s", clip_num + 1, total_clips, prompt[:80])
         return prompt[:400]
 
     except Exception as exc:
         logger.warning("Claude prompt failed for '%s' clip %d: %s — fallback", title[:30], clip_num, exc)
         return _build_scene_prompt_variant_fallback(segment, clip_num, total_clips)
-
 
 def _build_scene_prompt_variant_fallback(
     segment: _Segment,
@@ -983,67 +988,92 @@ async def _generate_ai_thumbnail(
     Returns:
         JPEG bytes of the thumbnail, or None if generation fails.
     """
-    import anthropic  # noqa: PLC0415
     import httpx  # noqa: PLC0415
-    import urllib.parse  # noqa: PLC0415
 
     # ---- Step 1: Claude generates thumbnail text -------------------------
     top_text = title.upper()[:30]  # fallback
     bottom_text = "WHO WINS?"       # fallback
 
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            client = anthropic.Anthropic(api_key=api_key)
-            msg = client.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=60,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"Video title: {title}\nScript: {script_body[:200]}\n\n"
-                        "Write 2 lines of YouTube thumbnail text that makes viewers want to click.\n"
-                        "Line 1: 3-4 word bold title (ALL CAPS, exciting, e.g. 'THOR VS SUPERMAN')\n"
-                        "Line 2: 3-5 word hook question (e.g. 'WHO ACTUALLY WINS?')\n"
-                        "Output ONLY the 2 lines, nothing else."
-                    )
-                }],
-            )
-            lines = msg.content[0].text.strip().split("\n")
-            if len(lines) >= 2:
-                top_text = lines[0].strip().upper()[:35]
-                bottom_text = lines[1].strip().upper()[:40]
-            elif len(lines) == 1:
-                top_text = lines[0].strip().upper()[:35]
+        client = build_claude_client()
+        prompt = (
+            f"Video title: {title}\nScript: {script_body[:200]}\n\n"
+            "Write 2 lines of YouTube thumbnail text that makes viewers want to click.\n"
+            "Line 1: 3-4 word bold title (ALL CAPS, exciting, e.g. 'THOR VS SUPERMAN')\n"
+            "Line 2: 3-5 word hook question (e.g. 'WHO ACTUALLY WINS?')\n"
+            "Output ONLY the 2 lines, nothing else."
+        )
+        result = await client.complete(prompt, max_tokens=60)
+        lines = result.strip().split("\n")
+        if len(lines) >= 2:
+            top_text = lines[0].strip().upper()[:35]
+            bottom_text = lines[1].strip().upper()[:40]
+        elif len(lines) == 1:
+            top_text = lines[0].strip().upper()[:35]
     except Exception as exc:
         logger.warning("Claude thumbnail text generation failed: %s", exc)
 
-    # ---- Step 2: Pollinations.AI generates background image --------------
-    # Use comic book art style with visual descriptions (not character names)
-    # to avoid unrecognizable likenesses while staying visually clear
+    # ---- Step 2: Gemini generates cinematic background image ---------------
+    # Uses gemini-2.5-flash-image (Nano Banana) for photorealistic cinematic
+    # thumbnail backgrounds. Falls back to Pollinations if Gemini fails.
     image_prompt = (
-        f"Comic book art style, {title}, "
-        f"muscular superhero in colorful costume on left facing powerful warrior on right, "
-        f"epic battle pose, dramatic clash, lightning and energy effects, "
-        f"destroyed city skyline background, vibrant saturated colors, "
-        f"bold thick outlines, Marvel DC comic aesthetic, "
-        f"high contrast dramatic lighting, no text, professional illustration"
-    )
-    encoded_prompt = urllib.parse.quote(image_prompt)
-    url = (
-        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-        f"?width=1280&height=720&model=flux-pro&nologo=true&enhance=true&seed=42"
+        f"Generate a photorealistic cinematic image for a YouTube thumbnail. "
+        f"Ultra realistic live-action Hollywood movie still, NOT cartoon, NOT animated. "
+        f"Split screen composition based on this topic: {title}. "
+        f"Two powerful characters facing off in dramatic poses. "
+        f"Dramatic orange and blue lighting, lens flare, rain, "
+        f"destroyed city skyline in background. "
+        f"IMAX cinematography, shallow depth of field, film grain, 8K detail. "
+        f"Style: like a real movie poster screenshot. No text anywhere in the image."
     )
 
+    img_bytes = None
     try:
-        async with httpx.AsyncClient(timeout=60.0) as http_client:
-            resp = await http_client.get(url)
-            resp.raise_for_status()
-            img_bytes = resp.content
-        logger.info("Pollinations thumbnail generated (%d bytes)", len(img_bytes))
+        from google import genai as _genai  # noqa: PLC0415
+        from google.genai import types as _genai_types  # noqa: PLC0415
+
+        _img_client = _genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+        _img_response = _img_client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=image_prompt,
+            config=_genai_types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+            ),
+        )
+        for part in _img_response.candidates[0].content.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
+                img_bytes = part.inline_data.data
+                logger.info("Gemini thumbnail generated (%d bytes)", len(img_bytes))
+                break
     except Exception as exc:
-        logger.warning("Pollinations image generation failed: %s — using fallback", exc)
-        return None
+        logger.warning("Gemini image generation failed: %s — trying Pollinations fallback", exc)
+
+    # Fallback: Pollinations.AI if Gemini failed
+    if not img_bytes:
+        import urllib.parse  # noqa: PLC0415
+        import random as _random  # noqa: PLC0415
+
+        fallback_prompt = (
+            f"Cinematic movie poster, {title}, "
+            f"two powerful characters facing off, dramatic lighting, "
+            f"destroyed city background, vibrant colors, "
+            f"high contrast, no text, professional"
+        )
+        encoded_prompt = urllib.parse.quote(fallback_prompt)
+        thumb_seed = _random.randint(0, 99999)
+        url = (
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+            f"?width=1280&height=720&model=flux-pro&nologo=true&enhance=true&seed={thumb_seed}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                resp = await http_client.get(url)
+                resp.raise_for_status()
+                img_bytes = resp.content
+            logger.info("Pollinations fallback thumbnail generated (%d bytes)", len(img_bytes))
+        except Exception as exc:
+            logger.warning("Pollinations fallback also failed: %s", exc)
+            return None
 
     # ---- Step 3: Pillow overlays bold text with drop shadow --------------
     try:
@@ -1333,14 +1363,25 @@ class Visual_Generator:
             len(segments), total_audio_seconds,
         )
 
-        # ---- 3. Generate clips — one per 10 seconds of each segment ------
+        # ---- 3. Generate clips — one per segment ------
+        # Extract topic from script: use first heading or first line as context
+        # for Claude to generate relevant video prompts
+        script_topic = ""
+        for line in script.content.splitlines():
+            line = line.strip().lstrip("#").strip()
+            if line:
+                script_topic = line[:100]
+                break
+
         clip_results = await self._generate_all_clips(
-            segments, style_profile, video_id, segment_durations=segment_durations
+            segments, style_profile, video_id,
+            segment_durations=segment_durations,
+            script_topic=script_topic,
         )
 
         # ---- 4. Build per-clip durations (even split within each segment) --
-        # Match cut interval to clip duration (5s) so clips don't loop
-        _CUT_EVERY_S: float = 5.0  # one clip per 5s = no looping
+        # Match cut interval to actual clip duration: 97 frames ÷ 25fps = 3.88s
+        _CUT_EVERY_S: float = 3.88  # matches num_frames=97 at frame_rate=25
         per_clip_durations: list[float] = []
         for seg_dur in segment_durations:
             n = max(1, round(seg_dur / _CUT_EVERY_S))
@@ -1425,6 +1466,7 @@ class Visual_Generator:
         style_profile: StyleProfile,
         video_id: str,
         segment_durations: Optional[list[float]] = None,
+        script_topic: str = "",
     ) -> list[ClipResult]:
         """Generate enough YouTube clips to cover every segment fully.
 
@@ -1435,7 +1477,7 @@ class Visual_Generator:
         Different search queries are used for each clip within a segment
         (varying keywords) so the visual variety matches the narration pacing.
         """
-        _CUT_EVERY_S: float = 5.0  # one clip per 5s = matches CLIP_DURATION, no looping
+        _CUT_EVERY_S: float = 3.88  # matches num_frames=97 at frame_rate=25, no looping
 
         results: list[ClipResult] = []
 
@@ -1466,7 +1508,7 @@ class Visual_Generator:
                     "total_global_clips": total_clips_all_segments,
                 }
                 prompt = await _generate_video_prompt_with_claude(
-                    segment, clip_num, n_clips, scene_state=scene_state
+                    segment, clip_num, n_clips, scene_state=scene_state, script_topic=script_topic
                 )
                 global_clip_num += 1
 
@@ -1475,6 +1517,7 @@ class Visual_Generator:
                     segment=segment,
                     prompt=prompt,
                     video_id=video_id,
+                    seed=-1,  # random per clip for visual variety
                 )
                 results.append(clip_result)
 
@@ -1486,6 +1529,7 @@ class Visual_Generator:
         segment: _Segment,
         prompt: str,
         video_id: str,
+        seed: int = -1,
     ) -> ClipResult:
         """Attempt to generate one clip via Viewmax; fall back to JPEG on exhaustion.
 
@@ -1522,6 +1566,7 @@ class Visual_Generator:
                 mp4_bytes = await self._viewmax.generate_clip(
                     prompt=current_prompt,
                     duration_seconds=_CLIP_DEFAULT_DURATION_S,
+                    seed=seed,
                 )
                 logger.debug(
                     "Viewmax clip succeeded for segment '%s' (video_id=%s, attempt=%d)",
@@ -1744,9 +1789,8 @@ class Visual_Generator:
                 # JPEG still: loop for the full segment duration
                 cmd += ["-loop", "1", "-t", f"{seg_dur:.2f}", "-i", str(clip_path)]
             else:
-                # Real MP4: loop so it fills the segment duration even if the
-                # source clip is shorter (e.g. 10s clip for a 45s segment)
-                cmd += ["-stream_loop", "-1", "-t", f"{seg_dur:.2f}", "-i", str(clip_path)]
+                # Real MP4: play once, trimmed to seg_dur (no looping)
+                cmd += ["-t", f"{seg_dur:.2f}", "-i", str(clip_path)]
 
         # Narration audio input (index = n_clips)
         cmd += ["-i", str(local_mp3_path)]

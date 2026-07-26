@@ -132,6 +132,8 @@ def _ensure_ready() -> None:
 # Inference
 # ---------------------------------------------------------------------------
 
+import random as _random
+
 def _run_inference(
     prompt: str,
     negative_prompt: str = (
@@ -142,11 +144,16 @@ def _run_inference(
     width: int = 768,
     num_frames: int = 97,
     frame_rate: int = 25,
-    seed: int = 42,
+    seed: int = -1,  # -1 = random
 ) -> bytes:
     import torch  # noqa: PLC0415
 
     _ensure_ready()
+
+    # Randomize seed if not explicitly provided
+    if seed < 0:
+        seed = _random.randint(0, 2**31 - 1)
+        logger.info("Using random seed: %d", seed)
 
     gc.collect()
     if torch.cuda.is_available():
@@ -205,7 +212,7 @@ def handler(job: dict) -> dict:
         width=int(inputs.get("width", 768)),
         num_frames=int(inputs.get("num_frames", 97)),
         frame_rate=int(inputs.get("frame_rate", 25)),
-        seed=int(inputs.get("seed", 42)),
+        seed=int(inputs.get("seed", -1)),  # -1 = random
     )
 
     return {"mp4_b64": base64.b64encode(mp4_bytes).decode("utf-8")}

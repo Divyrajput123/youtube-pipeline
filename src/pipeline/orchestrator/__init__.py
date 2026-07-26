@@ -629,6 +629,21 @@ class Orchestrator:
         )
         await self._flush_log(run_id, video_id)
 
+        # Handle Gate 2 reject — mark as rejected and stop pipeline
+        if gate2_result.get("action") == "reject":
+            await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
+            logger.info(
+                "start_pipeline: Gate 2 rejected by creator — video_id=%s marked as Script Rejected",
+                video_id,
+            )
+            self._notifier.send_review_gate(
+                video_id=video_id,
+                gate_type="final",
+                asset_links=[],
+                action_prompt="❌ Video rejected at final review. Pipeline stopped.",
+            )
+            return run_id
+
         # ------------------------------------------------------------------ #
         # Stage 7: Publisher → YouTubeVideoRef                                #
         # (Gate 2 handled externally via handle_review_response)               #

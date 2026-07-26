@@ -511,9 +511,24 @@ class Narration_Generator:
         # 2. Remove Markdown headings (## HOOK, ### Segment 1: ..., etc.)
         clean_content = _re.sub(r"^#{1,6}\s+.*$", "", clean_content, flags=_re.MULTILINE)
 
-        # 3. Remove bare section labels on their own line (HOOK, CTA, BODY, etc.)
-        clean_content = _re.sub(r"^(HOOK|CTA|BODY|INTRO|OUTRO|Segment\s*\d+[^:\n]*)[\s:]*$",
-                                 "", clean_content, flags=_re.MULTILINE | _re.IGNORECASE)
+        # 3. Remove section label lines (HOOK, CTA, BODY, INTRO, OUTRO — with or
+        #    without markdown, numbering, dashes, colons, or a trailing title,
+        #    e.g. "HOOK", "## HOOK", "BODY - SEGMENT 1: TACTICAL GENIUS",
+        #    "2. BODY (3 segments)", "Segment 1: The Setup").
+        # NOTE: use [ \t] (not \s) inside these classes so the match never
+        # crosses a newline into the next line's actual narration content.
+        clean_content = _re.sub(
+            r"^[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?"
+            r"(HOOK|CTA|BODY|INTRO|OUTRO)"
+            r"([ \t]*[-:–—]?[ \t]*SEGMENT[ \t]*\d+)?"
+            r"[ \t:\-–—]*[^\n]*$",
+            "", clean_content, flags=_re.MULTILINE | _re.IGNORECASE,
+        )
+        # Also catch standalone "Segment N: ..." headings not preceded by BODY.
+        clean_content = _re.sub(
+            r"^[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?Segment[ \t]*\d+[ \t:\-–—]*[^\n]*$",
+            "", clean_content, flags=_re.MULTILINE | _re.IGNORECASE,
+        )
 
         # 4. Remove lines that are only dashes or asterisks (horizontal rules)
         clean_content = _re.sub(r"^[-*_]{2,}\s*$", "", clean_content, flags=_re.MULTILINE)

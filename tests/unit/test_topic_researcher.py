@@ -520,19 +520,30 @@ class TestBatchSizeValidation:
 
 
 # ---------------------------------------------------------------------------
-# Unit tests: stubs raise NotImplementedError
+# Unit tests: clients fall back to placeholder topics when unconfigured
+# (development mode, no API key set — no real network calls made)
 # ---------------------------------------------------------------------------
 
 
 class TestClientStubs:
     @pytest.mark.asyncio
-    async def test_perplexity_stub_raises(self) -> None:
+    async def test_perplexity_returns_placeholders_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+        monkeypatch.delenv("PIPELINE_MODE", raising=False)
         client = PerplexityMCPClient()
-        with pytest.raises(NotImplementedError):
-            await client.query_trending("query", 72)
+        results = await client.query_trending("query", 72)
+        assert len(results) > 0
+        assert all(isinstance(r, RawTopicResult) for r in results)
 
     @pytest.mark.asyncio
-    async def test_tavily_stub_raises(self) -> None:
+    async def test_tavily_returns_placeholders_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("PIPELINE_MODE", raising=False)
         client = TavilyMCPClient()
-        with pytest.raises(NotImplementedError):
-            await client.query_trending("query", 72)
+        results = await client.query_trending("query", 72)
+        assert len(results) > 0
+        assert all(isinstance(r, RawTopicResult) for r in results)
