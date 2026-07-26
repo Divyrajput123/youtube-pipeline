@@ -266,7 +266,10 @@ class ReviewGate:
 
         # Path A: webhook queue
         async def _wait_webhook() -> str:
-            return await asyncio.wait_for(self._action_queue.get(), timeout=timeout)
+            try:
+                return await asyncio.wait_for(self._action_queue.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return "timeout"
 
         # Path B: Notion polling
         async def _wait_notion() -> str:
