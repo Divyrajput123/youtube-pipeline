@@ -221,6 +221,7 @@ class MetadataPackage(BaseModel):
     chapters: list[Chapter] = Field(default_factory=list)
     primary_keyword: str
     asset_url: Optional[str] = None
+    youtube_video_id: Optional[str] = None
     generated_at: datetime
 
     @field_validator("hashtags")

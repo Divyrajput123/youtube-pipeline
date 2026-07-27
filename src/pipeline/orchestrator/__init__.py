@@ -679,6 +679,18 @@ class Orchestrator:
                 video_id, exc,
             )
 
+        # Patch the metadata JSON in Drive with the YouTube video ID
+        try:
+            metadata = await self._metadata_generator.patch_youtube_id(
+                package=metadata,
+                youtube_video_id=yt_ref.youtube_video_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "start_pipeline: could not patch youtube_video_id into metadata JSON for %s: %s",
+                video_id, exc,
+            )
+
         # Auto-schedule this single video in the next free slot on YouTube
         try:
             slots = await self._find_next_free_slot(n_slots=1)
@@ -855,7 +867,7 @@ class Orchestrator:
         }
 
         if resume_from in stages_that_need_ra_tr:
-            # Re-run reference analysis and topic research.
+            # Re-run reference analysis (cheap, always needed for style context).
             style_profile = await self._run_stage(
                 stage_name="reference_analyzer",
                 video_id=video_id,
@@ -865,15 +877,31 @@ class Orchestrator:
                     channel_url=self._config.reference_channel_url
                 ),
             )
-            topics = await self._run_stage(
-                stage_name="topic_researcher",
-                video_id=video_id,
-                run_id=run_id,
-                pre_status=PipelineStatus.RESEARCHING,
-                coro_factory=lambda: self._topic_researcher.research(
-                    batch_size=1, excluded_titles=[], run_id=run_id
-                ),
-            )
+
+            # Only re-run topic research when we actually need to generate a
+            # new script.  For later stages the script already exists and its
+            # content is the source of truth — generating fresh topics risks
+            # producing metadata that doesn't match the already-written script.
+            if resume_from == "script_writer":
+                topics = await self._run_stage(
+                    stage_name="topic_researcher",
+                    video_id=video_id,
+                    run_id=run_id,
+                    pre_status=PipelineStatus.RESEARCHING,
+                    coro_factory=lambda: self._topic_researcher.research(
+                        batch_size=1, excluded_titles=[], run_id=run_id
+                    ),
+                )
+            else:
+                # Derive a synthetic TopicEntry from the stored script content
+                # so metadata generation stays consistent with the video.
+                assert script_bytes is not None
+                _script = _reconstruct_script(video_id, script_bytes)
+                topics = [_derive_topic_from_script(_script)]
+                logger.info(
+                    "resume_pipeline: derived topic from script: '%s'",
+                    topics[0].title,
+                )
 
         # Stage: script_writer
         if resume_from in {"script_writer", "narration_generator",
@@ -915,6 +943,12 @@ class Orchestrator:
                         video_id=video_id,
                     ),
                 )
+                # Update Notion with narration Drive URL
+                if getattr(narration, "asset_url", None):
+                    try:
+                        await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("resume: could not update narration_url for %s: %s", video_id, exc)
             else:
                 assert narration_bytes is not None
                 narration = _reconstruct_narration(video_id)
@@ -937,6 +971,14 @@ class Orchestrator:
                 await self._update_calendar_status(
                     video_id, PipelineStatus.VISUALS_READY, run_id
                 )
+                # Update Notion with video and thumbnail Drive URLs
+                try:
+                    if getattr(visual, "mp4_url", None):
+                        await self._content_calendar.update_asset_link(video_id, "video", visual.mp4_url)
+                    if getattr(visual, "thumbnail_url", None):
+                        await self._content_calendar.update_asset_link(video_id, "thumbnail", visual.thumbnail_url)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("resume: could not update video/thumbnail URLs for %s: %s", video_id, exc)
             else:
                 assert visual_bytes is not None
                 visual = _reconstruct_visual(video_id)
@@ -970,6 +1012,12 @@ class Orchestrator:
                         video_id=video_id,
                     ),
                 )
+                # Update Notion with metadata Drive URL
+                if getattr(metadata, "asset_url", None):
+                    try:
+                        await self._content_calendar.update_asset_link(video_id, "metadata", metadata.asset_url)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("resume: could not update metadata_url for %s: %s", video_id, exc)
             else:
                 assert metadata_bytes is not None
                 metadata = _reconstruct_metadata(video_id, metadata_bytes)
@@ -1002,6 +1050,41 @@ class Orchestrator:
             except Exception as exc:
                 logger.warning(
                     "resume_pipeline: could not store YouTube video ID for %s: %s",
+                    video_id, exc,
+                )
+
+            # Patch the metadata JSON in Drive with the YouTube video ID
+            try:
+                metadata = await self._metadata_generator.patch_youtube_id(
+                    package=metadata,  # type: ignore[arg-type]
+                    youtube_video_id=yt_ref.youtube_video_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "resume_pipeline: could not patch youtube_video_id into metadata JSON for %s: %s",
+                    video_id, exc,
+                )
+
+            # Auto-schedule in the next free slot (same as start_pipeline)
+            try:
+                slots = await self._find_next_free_slot(n_slots=1)
+                publish_dt = slots[0]
+                await self._content_calendar.set_publish_datetime(
+                    video_id=video_id,
+                    dt=publish_dt,
+                )
+                await self._publisher.schedule(
+                    video_id=video_id,
+                    youtube_video_id=yt_ref.youtube_video_id,
+                    publish_datetime=publish_dt,
+                )
+                logger.info(
+                    "resume_pipeline: auto-scheduled video_id=%s for %s",
+                    video_id, publish_dt.strftime("%Y-%m-%d %H:%M UTC"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "resume_pipeline: could not auto-schedule video_id=%s (%s) — staying Unlisted",
                     video_id, exc,
                 )
 
@@ -2226,6 +2309,75 @@ class Orchestrator:
 # ---------------------------------------------------------------------------
 # Reconstruction helpers for resume_pipeline (task 16.3)
 # ---------------------------------------------------------------------------
+
+
+def _derive_topic_from_script(script: "Script") -> "TopicEntry":
+    """Derive a synthetic :class:`~pipeline.models.TopicEntry` from a script.
+
+    Extracts a meaningful topic title from the script content by looking for:
+    1. A Markdown heading (``# Title``)
+    2. The first substantial non-heading line (the hook/intro paragraph)
+
+    Skips section markers (short ALL-CAPS lines like "HOOK", "INTRODUCTION")
+    and speaker-direction annotations (``[pause]``, ``[emphasis]``).
+
+    This is used during pipeline resume so the metadata generator uses a topic
+    consistent with the already-written script, rather than fresh (possibly
+    unrelated) search results.
+
+    Args:
+        script: The reconstructed Script object.
+
+    Returns:
+        A single :class:`~pipeline.models.TopicEntry` with a synthetic score.
+    """
+    import re as _re  # noqa: PLC0415
+    from pipeline.models import TopicEntry  # local import
+
+    lines = script.content.splitlines()
+
+    # Strategy 1: Find a markdown heading like "# Topic Title"
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            if len(heading) > 10:
+                title = heading[:200]
+                break
+    else:
+        # Strategy 2: Find first substantial content line that isn't a section marker
+        # Section markers are short ALL-CAPS lines (HOOK, INTRODUCTION, etc.)
+        title = ""
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Skip ALL-CAPS section headers (under ~40 chars typically)
+            if stripped == stripped.upper() and len(stripped) < 50:
+                continue
+            # Skip lines that start with annotations
+            if stripped.startswith("["):
+                continue
+            # Clean speaker-direction annotations for a readable title
+            clean = _re.sub(r"\[.*?\]", "", stripped).strip()
+            if len(clean) > 15:
+                # Extract the core question/statement — take the first sentence
+                sentences = _re.split(r"[.!?]", clean)
+                title = sentences[0].strip()[:200] if sentences else clean[:200]
+                break
+
+        if not title:
+            words = [w for w in script.content.split() if w.strip()][:10]
+            title = " ".join(words)[:200]
+
+    return TopicEntry(
+        title=title,
+        composite_score=1.0,
+        recency_hours=0.0,
+        source_query_timestamp=_utcnow(),
+        search_volume_signal=100.0,
+        relevance_tags_matched=[],
+    )
 
 
 def _reconstruct_script(video_id: str, content_bytes: bytes) -> Script:
