@@ -127,6 +127,9 @@ def _primary_keyword(topics: list[TopicEntry]) -> str:
     Filters out Perplexity refusal/error messages that sometimes come back
     as topic titles (e.g. 'The search results include outdated items...')
     to ensure the primary keyword is a real topic phrase.
+
+    Truncation is done at a word boundary so the keyword never ends mid-word
+    or with dangling punctuation (open parenthesis, colon, etc.).
     """
     _REFUSAL_MARKERS = (
         "search results", "outdated", "unrelated", "cannot", "unable",
@@ -137,14 +140,42 @@ def _primary_keyword(topics: list[TopicEntry]) -> str:
     for topic in sorted_topics:
         title_lower = topic.title.lower()
         if not any(marker in title_lower for marker in _REFUSAL_MARKERS):
-            # Truncate to 60 chars max so it can always fit in a YouTube title
-            return topic.title[:60].strip()
+            return _truncate_keyword(topic.title, max_chars=60)
     # All topics look like refusals — use a safe fallback from the first one
-    # truncated to remove the garbage
     fallback = sorted_topics[0].title
     # Take first 5 words as a keyword
     words = fallback.split()[:5]
-    return " ".join(words)[:60]
+    return _truncate_keyword(" ".join(words), max_chars=60)
+
+
+def _truncate_keyword(text: str, max_chars: int = 60) -> str:
+    """Truncate *text* to at most *max_chars* at a word boundary.
+
+    Ensures the result does not end with dangling punctuation such as an
+    open parenthesis, colon, dash, or comma. Also removes trailing words
+    that leave unmatched opening brackets/parentheses.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+
+    # Truncate at last space within limit
+    truncated = text[:max_chars]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        truncated = truncated[:last_space]
+
+    # Strip trailing dangling punctuation
+    truncated = truncated.rstrip(" :,;-–—(\"'")
+
+    # Remove unmatched opening parenthesis/bracket content
+    # If there's an open paren without a close, drop everything from it
+    if "(" in truncated and ")" not in truncated[truncated.rfind("("):]:
+        truncated = truncated[:truncated.rfind("(")].rstrip(" :,;-–—")
+    if "[" in truncated and "]" not in truncated[truncated.rfind("["):]:
+        truncated = truncated[:truncated.rfind("[")].rstrip(" :,;-–—")
+
+    return truncated.strip()
 
 
 def _derive_chapters(script: Script) -> list[Chapter]:
@@ -668,6 +699,38 @@ class Metadata_Generator:
             "Metadata_Generator: wrote %s for video_id=%s", filename, video_id
         )
         return package
+
+    async def patch_youtube_id(
+        self,
+        package: MetadataPackage,
+        youtube_video_id: str,
+    ) -> MetadataPackage:
+        """Patch the metadata JSON in Drive with the YouTube video ID after upload.
+
+        Re-writes ``metadata/{video_id}.json`` in the Asset_Store with
+        ``youtube_video_id`` set, and returns an updated :class:`MetadataPackage`.
+
+        Args:
+            package: The existing :class:`MetadataPackage` returned by :meth:`generate`.
+            youtube_video_id: The YouTube video ID returned after a successful upload.
+
+        Returns:
+            Updated :class:`MetadataPackage` with ``youtube_video_id`` set.
+        """
+        updated = package.model_copy(update={"youtube_video_id": youtube_video_id})
+        filename = f"{package.video_id}.json"
+        await self._store.write(
+            video_id=package.video_id,
+            subfolder=SubFolder.METADATA,
+            filename=filename,
+            content=updated.model_dump_json(indent=2).encode("utf-8"),
+        )
+        logger.info(
+            "Metadata_Generator: patched youtube_video_id=%s into %s",
+            youtube_video_id,
+            filename,
+        )
+        return updated
 
     # ------------------------------------------------------------------
     # Per-field validate-and-regenerate helpers
