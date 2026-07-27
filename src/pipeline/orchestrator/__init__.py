@@ -714,6 +714,30 @@ class Orchestrator:
                 video_id, exc,
             )
 
+        # ------------------------------------------------------------------ #
+        # Post-upload enhancements: Shorts extraction + end-screen            #
+        # ------------------------------------------------------------------ #
+
+        # Extract a Short clip and upload it (best-effort, non-blocking)
+        try:
+            mp4_source = visual.mp4_url or visual.mp4_path
+            short_id = await self._publisher.extract_and_upload_short(
+                video_id=video_id,
+                mp4_url=mp4_source,
+                metadata=metadata,
+                full_video_id=yt_ref.youtube_video_id,
+            )
+            if short_id:
+                logger.info("start_pipeline: Short uploaded — %s", short_id)
+        except Exception as exc:
+            logger.warning("start_pipeline: Shorts extraction failed (non-fatal): %s", exc)
+
+        # Add end-screen linking to best-performing video (best-effort)
+        try:
+            await self._publisher.add_end_screen(yt_ref.youtube_video_id)
+        except Exception as exc:
+            logger.warning("start_pipeline: end-screen addition failed (non-fatal): %s", exc)
+
         # Send post-upload notification with YouTube unlisted URL
         self._notifier.send_review_gate(
             video_id=video_id,
@@ -1668,13 +1692,33 @@ class Orchestrator:
         """
         from datetime import timedelta  # noqa: PLC0415
 
-        # Convert configured local publish time to UTC
-        publish_hour_local = self._config.weekly_publish_time_hour
-        publish_minute_local = self._config.weekly_publish_time_minute
-        tz_offset = self._config.timezone_offset_hours
-        total_minutes = publish_hour_local * 60 + publish_minute_local - int(tz_offset * 60)
-        publish_hour_utc = (total_minutes // 60) % 24
-        publish_minute_utc = total_minutes % 60
+        # Try to determine optimal publish hour from YouTube Analytics (peak audience hour).
+        # Falls back to configured local publish time if analytics unavailable.
+        peak_hour_utc: Optional[int] = None
+        try:
+            peak_hour_utc = await self._publisher._yt.get_audience_peak_hour()  # noqa: SLF001
+        except Exception as exc:
+            logger.warning("_find_next_free_slot: analytics query failed: %s", exc)
+
+        if peak_hour_utc is not None:
+            publish_hour_utc = peak_hour_utc
+            publish_minute_utc = 0  # publish on the hour during peak
+            logger.info(
+                "_find_next_free_slot: using analytics-derived peak hour %d UTC",
+                publish_hour_utc,
+            )
+        else:
+            # Fallback: convert configured local publish time to UTC
+            publish_hour_local = self._config.weekly_publish_time_hour
+            publish_minute_local = self._config.weekly_publish_time_minute
+            tz_offset = self._config.timezone_offset_hours
+            total_minutes = publish_hour_local * 60 + publish_minute_local - int(tz_offset * 60)
+            publish_hour_utc = (total_minutes // 60) % 24
+            publish_minute_utc = total_minutes % 60
+            logger.info(
+                "_find_next_free_slot: using configured publish time %02d:%02d UTC",
+                publish_hour_utc, publish_minute_utc,
+            )
 
         # Query YouTube for already-scheduled videos
         try:

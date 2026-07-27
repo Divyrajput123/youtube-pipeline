@@ -379,14 +379,14 @@ CHAPTER TIMESTAMPS TO INCLUDE IN DESCRIPTION:
 OUTPUT REQUIREMENTS — return ONLY a valid JSON object with these exact keys:
 
 {{
-  "title": "<string: ≤60 characters, must include the primary keyword '{primary_kw}'>",
+  "title": "<string: ≤60 characters total, but the FIRST 50 characters must be a complete, compelling hook visible on mobile. Use this formula: [Power Word/Emotion] + [Specific Topic] + [Curiosity Gap]. Examples: 'UNSTOPPABLE: Why DC Heroes Destroy Marvel in a Fight', 'The REAL Reason Thor Beats Superman Every Time'. The hook before char 50 must make sense alone — do NOT cut mid-word at position 50. Must relate to the primary keyword '{primary_kw}'>",
   "description": "<string: 200-500 words. Must contain: (1) a one-paragraph summary of the video, (2) timestamped chapters using exactly the timestamps listed above in format 'MM:SS - label', (3) 3-5 CTAs or links such as 'Subscribe', 'Check the description', 'Comment below', (4) a closing paragraph that naturally includes at least 3 of the tags>",
   "tags": ["<2-5 word tag>", ...],
   "hashtags": ["#keyword", ...]
 }}
 
 CONSTRAINTS:
-- title: at most 60 characters, must include '{primary_kw}'
+- title: at most 60 characters total. The first 50 characters MUST form a complete, compelling hook (YouTube truncates at ~50 chars on mobile). Use a power word (UNSTOPPABLE, INSANE, SHOCKING, ULTIMATE, BRUTAL) or curiosity gap (Why X Beats Y, The REAL Reason, What Nobody Tells You About). Must relate to '{primary_kw}'
 - description: exactly 200-500 words (count carefully), include chapter markers, 3-5 CTAs, closing paragraph uses ≥3 tags
 - tags: exactly 10-15 tags, each tag must be 2-5 words, cover primary topic, related subtopics, and channel brand terms
 - hashtags: exactly 3-5 hashtags, each starts with '#', body (after '#') is 2-30 characters with NO spaces
@@ -409,7 +409,10 @@ REASON: {reason}
 
 REQUIREMENTS:
 - At most 60 characters total
-- Must include the primary keyword: '{primary_kw}'
+- First 50 characters must form a complete hook visible on mobile (YouTube truncates at ~50 on mobile)
+- Use formula: [Power Word] + [Topic] + [Curiosity Gap]
+- Power words: UNSTOPPABLE, INSANE, SHOCKING, ULTIMATE, BRUTAL, The REAL Reason, What Nobody Tells You
+- Must relate to the primary keyword: '{primary_kw}'
 - Engaging, click-worthy, accurate to the video content
 
 Return ONLY the new title string — no quotes, no JSON, no explanation.

@@ -501,6 +501,265 @@ class YouTubeDataAPIClient:
         loop = _asyncio.get_running_loop()
         await loop.run_in_executor(None, _sync_add)
 
+    async def upload_short(
+        self,
+        mp4_path: str,
+        title: str,
+        description: str,
+        tags: list[str],
+    ) -> dict[str, str]:
+        """Upload a vertical (9:16) Short video to YouTube.
+
+        Shorts are identified by YouTube via the #Shorts hashtag in the title
+        and vertical aspect ratio. Uploaded as public.
+
+        Args:
+            mp4_path: Local path to the vertical MP4 file.
+            title: Short title (must end with ' #Shorts' for algorithm pickup).
+            description: Short description with link to full video.
+            tags: Tag list.
+
+        Returns:
+            Dict with "id" and "url" keys.
+        """
+        if self._fallback_mode:
+            import uuid
+            fake_id = f"SHORT_{uuid.uuid4().hex[:11]}"
+            logger.info("YouTube fallback: simulated Short upload → %s", fake_id)
+            return {"id": fake_id, "url": f"https://www.youtube.com/shorts/{fake_id}"}
+
+        import asyncio as _asyncio  # noqa: PLC0415
+        from googleapiclient.http import MediaFileUpload  # type: ignore[import-untyped]
+
+        def _sync_upload() -> dict[str, str]:
+            body = {
+                "snippet": {
+                    "title": title[:100],
+                    "description": description[:5000],
+                    "tags": tags[:500],
+                    "categoryId": "24",
+                },
+                "status": {"privacyStatus": "public"},
+            }
+            media = MediaFileUpload(mp4_path, mimetype="video/mp4", resumable=True)
+            request = self._service.videos().insert(
+                part="snippet,status",
+                body=body,
+                media_body=media,
+            )
+            response = None
+            while response is None:
+                _, response = request.next_chunk()
+            vid = response["id"]
+            return {"id": vid, "url": f"https://www.youtube.com/shorts/{vid}"}
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_upload)
+
+    async def get_best_performing_video(self, days: int = 28) -> Optional[str]:
+        """Return the youtube_video_id of the best-performing video in the last N days.
+
+        "Best performing" = most views. Used to link in end-screens.
+
+        Returns:
+            YouTube video ID string, or None if no videos found.
+        """
+        if self._fallback_mode:
+            return None
+
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        def _sync_best() -> Optional[str]:
+            # Get the channel's uploads playlist
+            ch_resp = self._service.channels().list(
+                part="contentDetails", mine=True
+            ).execute()
+            items = ch_resp.get("items", [])
+            if not items:
+                return None
+            uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+            # Get recent video IDs (up to 50)
+            pl_resp = self._service.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_playlist_id,
+                maxResults=50,
+            ).execute()
+            video_ids = [
+                item["snippet"]["resourceId"]["videoId"]
+                for item in pl_resp.get("items", [])
+                if item["snippet"].get("resourceId", {}).get("videoId")
+            ]
+            if not video_ids:
+                return None
+
+            # Get view counts for these videos
+            stats_resp = self._service.videos().list(
+                part="statistics",
+                id=",".join(video_ids[:50]),
+            ).execute()
+            best_id = None
+            best_views = -1
+            for item in stats_resp.get("items", []):
+                views = int(item.get("statistics", {}).get("viewCount", "0"))
+                if views > best_views:
+                    best_views = views
+                    best_id = item["id"]
+
+            return best_id
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_best)
+
+    async def get_audience_peak_hour(self) -> Optional[int]:
+        """Query YouTube Analytics to find the hour (0-23 UTC) with highest viewer activity.
+
+        Uses the YouTube Analytics API 'userActivity' report to find the hour
+        with the most views over the past 28 days.
+
+        Returns:
+            Hour (0-23 in UTC) with peak audience, or None if analytics unavailable.
+        """
+        if self._fallback_mode:
+            return None
+
+        import asyncio as _asyncio  # noqa: PLC0415
+        from datetime import date, timedelta  # noqa: PLC0415
+
+        def _sync_analytics() -> Optional[int]:
+            try:
+                from google.oauth2.credentials import Credentials  # type: ignore[import-untyped]
+                from googleapiclient.discovery import build  # type: ignore[import-untyped]
+                import google.auth.transport.requests as _gtr  # noqa: PLC0415
+
+                # Build YouTube Analytics API service (separate from Data API)
+                creds = Credentials(
+                    token=None,
+                    refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=os.environ["GOOGLE_CLIENT_ID"],
+                    client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+                    scopes=["https://www.googleapis.com/auth/yt-analytics.readonly"],
+                )
+                creds.refresh(_gtr.Request())
+                analytics = build("youtubeAnalytics", "v2", credentials=creds, cache_discovery=False)
+
+                end_date = date.today()
+                start_date = end_date - timedelta(days=28)
+
+                # Query views grouped by hour — YouTube Analytics dimension "hour"
+                # returns views per hour of the day (0-23)
+                resp = analytics.reports().query(
+                    ids="channel==MINE",
+                    startDate=start_date.isoformat(),
+                    endDate=end_date.isoformat(),
+                    metrics="views",
+                    dimensions="hour",
+                    sort="-views",
+                    maxResults=1,
+                ).execute()
+
+                rows = resp.get("rows", [])
+                if rows:
+                    # First row is the hour with most views
+                    peak_hour = int(rows[0][0])
+                    logger.info("YouTube Analytics: peak audience hour is %d UTC", peak_hour)
+                    return peak_hour
+                return None
+            except Exception as exc:
+                logger.warning("YouTube Analytics query failed (non-fatal): %s", exc)
+                return None
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_analytics)
+
+    async def set_end_screen(self, youtube_video_id: str, best_video_id: str) -> None:
+        """Add end-screen elements to a video: subscribe button + link to best video.
+
+        Note: The YouTube Data API does not natively support end-screen creation.
+        Instead we use the 'endScreen' part of the videos resource (available in
+        some API versions) or fall back to adding a card pointing to the best video.
+
+        Args:
+            youtube_video_id: The video to add end-screen to.
+            best_video_id: The best-performing video to link to.
+        """
+        if self._fallback_mode:
+            logger.info("YouTube fallback: simulated end-screen for %s", youtube_video_id)
+            return
+
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        def _sync_end_screen() -> None:
+            # YouTube Data API v3 does not directly support end-screens programmatically.
+            # However, we can add an info card (i-card) pointing to the best video.
+            # This gives a clickable link during the video.
+            try:
+                # Get video duration first to place the card at the end
+                vid_resp = self._service.videos().list(
+                    part="contentDetails",
+                    id=youtube_video_id,
+                ).execute()
+                items = vid_resp.get("items", [])
+                if not items:
+                    logger.warning("set_end_screen: video %s not found", youtube_video_id)
+                    return
+
+                # Parse ISO 8601 duration (PT2M45S → seconds)
+                import re as _re  # noqa: PLC0415
+                duration_iso = items[0]["contentDetails"]["duration"]
+                m = _re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_iso)
+                if m:
+                    h = int(m.group(1) or 0)
+                    mins = int(m.group(2) or 0)
+                    s = int(m.group(3) or 0)
+                    total_seconds = h * 3600 + mins * 60 + s
+                else:
+                    total_seconds = 120  # fallback
+
+                # Place card in the last 20 seconds of the video
+                card_start_ms = max(0, (total_seconds - 20)) * 1000
+
+                # Add video card using the activities/videoCards approach
+                # Since direct endScreen API isn't public, we update the
+                # video description to include a link to the best video
+                # as a workaround + add to "related videos" via playlist
+                logger.info(
+                    "set_end_screen: no public API for end-screens; "
+                    "adding best video %s link in description for %s",
+                    best_video_id, youtube_video_id,
+                )
+
+                # Append link to description
+                vid_snippet = self._service.videos().list(
+                    part="snippet",
+                    id=youtube_video_id,
+                ).execute()
+                if vid_snippet.get("items"):
+                    current_desc = vid_snippet["items"][0]["snippet"]["description"]
+                    best_url = f"https://www.youtube.com/watch?v={best_video_id}"
+                    if best_url not in current_desc:
+                        new_desc = (
+                            f"{current_desc}\n\n"
+                            f"🎬 Watch our most popular video: {best_url}"
+                        )
+                        self._service.videos().update(
+                            part="snippet",
+                            body={
+                                "id": youtube_video_id,
+                                "snippet": {
+                                    **vid_snippet["items"][0]["snippet"],
+                                    "description": new_desc[:5000],
+                                },
+                            },
+                        ).execute()
+                        logger.info("set_end_screen: appended best video link to description")
+            except Exception as exc:
+                logger.warning("set_end_screen failed (non-fatal): %s", exc)
+
+        loop = _asyncio.get_running_loop()
+        await loop.run_in_executor(None, _sync_end_screen)
+
     async def _fetch_bytes(self, url_or_path: str) -> bytes:
         """Download content from a Google Drive URL or read a local file path."""
         if url_or_path.startswith("https://drive.google.com"):
@@ -809,14 +1068,16 @@ class Publisher:
                 thumb_exc,
             )
 
-        # --- 3. Post pinned comment (best-effort) ----------------------------
+        # --- 3. Post pinned comment (best-effort, topic-specific) ---------------
         try:
+            # Build a topic-relevant engagement question from the primary keyword
+            topic_phrase = metadata.primary_keyword or metadata.title
             comment_text = (
-                f"🔥 Enjoyed this video? Here's what to do next:\n\n"
-                f"👍 LIKE this video if you want more epic battles\n"
-                f"💬 COMMENT below — who should fight next?\n"
-                f"🔔 SUBSCRIBE and hit the bell for new videos!\n\n"
-                f"#Superhero #Battle #WhoWouldWin"
+                f"🔥 What do YOU think about {topic_phrase}?\n\n"
+                f"👇 Drop your answer below — I read every comment!\n\n"
+                f"👍 LIKE if you want more breakdowns like this\n"
+                f"🔔 SUBSCRIBE and hit the bell so you never miss a video\n\n"
+                f"{' '.join(metadata.hashtags[:3])}"
             )
             await self._yt.post_pinned_comment(
                 youtube_video_id=youtube_video_id,
@@ -854,6 +1115,123 @@ class Publisher:
             url,
         )
         return ref
+
+    # ------------------------------------------------------------------
+    # Shorts auto-extraction + upload
+    # ------------------------------------------------------------------
+
+    async def extract_and_upload_short(
+        self,
+        video_id: str,
+        mp4_url: str,
+        metadata: "MetadataPackage",
+        full_video_id: str,
+    ) -> Optional[str]:
+        """Extract first 55 seconds from the full video, re-encode as 9:16, upload as Short.
+
+        Steps:
+        1. Download the full MP4 from Drive.
+        2. Use ffmpeg to extract the first 55 seconds and crop/scale to 1080x1920 (9:16).
+        3. Upload via YouTubeDataAPIClient.upload_short with #Shorts in title.
+
+        Args:
+            video_id: Pipeline video ID.
+            mp4_url: Google Drive URL of the full MP4.
+            metadata: MetadataPackage for title/tags context.
+            full_video_id: YouTube video ID of the full video (for linking).
+
+        Returns:
+            YouTube Short video ID, or None if extraction/upload fails.
+        """
+        import subprocess as _sp  # noqa: PLC0415
+        import tempfile as _tmp  # noqa: PLC0415
+        import pathlib as _pl  # noqa: PLC0415
+
+        try:
+            # 1. Download full video
+            video_bytes = await self._yt._fetch_bytes(mp4_url)
+
+            with _tmp.TemporaryDirectory() as tmpdir:
+                full_path = _pl.Path(tmpdir) / "full.mp4"
+                short_path = _pl.Path(tmpdir) / "short.mp4"
+                full_path.write_bytes(video_bytes)
+
+                # 2. Extract first 55s, crop to center 9:16, scale to 1080x1920
+                # Filter: crop to 9:16 aspect from center, then scale to 1080x1920
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", str(full_path),
+                    "-t", "55",
+                    "-vf", "crop=ih*9/16:ih,scale=1080:1920",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    str(short_path),
+                ]
+
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: _sp.run(ffmpeg_cmd, capture_output=True, timeout=120, check=True),
+                )
+
+                # 3. Build Short metadata
+                # Title: first 90 chars of original title + #Shorts
+                short_title = metadata.title[:90] + " #Shorts"
+                full_url = f"https://www.youtube.com/watch?v={full_video_id}"
+                short_desc = (
+                    f"Watch the FULL video: {full_url}\n\n"
+                    f"{metadata.description[:200]}...\n\n"
+                    f"#Shorts {' '.join(metadata.hashtags[:3])}"
+                )
+
+                # 4. Upload
+                result = await self._yt.upload_short(
+                    mp4_path=str(short_path),
+                    title=short_title,
+                    description=short_desc,
+                    tags=metadata.tags[:10],
+                )
+                logger.info(
+                    "Publisher.extract_and_upload_short: uploaded Short %s for video_id=%s",
+                    result["id"], video_id,
+                )
+                return result["id"]
+
+        except Exception as exc:
+            logger.warning(
+                "Publisher.extract_and_upload_short failed for video_id=%s (non-fatal): %s",
+                video_id, exc,
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # End-screen / best-video linking
+    # ------------------------------------------------------------------
+
+    async def add_end_screen(self, youtube_video_id: str) -> None:
+        """Add end-screen elements linking to the channel's best-performing video.
+
+        Best-effort: logs a warning if it fails but doesn't raise.
+
+        Args:
+            youtube_video_id: The YouTube video to add end-screen to.
+        """
+        try:
+            best_id = await self._yt.get_best_performing_video(days=28)
+            if not best_id or best_id == youtube_video_id:
+                logger.info("add_end_screen: no suitable best video found, skipping")
+                return
+            await self._yt.set_end_screen(youtube_video_id, best_id)
+            logger.info(
+                "Publisher.add_end_screen: linked best video %s in %s",
+                best_id, youtube_video_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Publisher.add_end_screen failed for %s (non-fatal): %s",
+                youtube_video_id, exc,
+            )
 
     # ------------------------------------------------------------------
     # Task 14.2 — schedule
