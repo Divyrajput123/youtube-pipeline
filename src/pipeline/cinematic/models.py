@@ -1,0 +1,180 @@
+"""Data models for the cinematic fight pipeline.
+
+Defines the structured beat format that Claude outputs and the pipeline consumes.
+Each beat represents a 1-5 second segment of the final video with precise
+timing, audio cues, and video generation prompts.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+
+class BeatType(str, Enum):
+    """Type of cinematic beat — determines audio/visual treatment."""
+
+    DIALOGUE = "dialogue"       # Character speaks + ambient SFX
+    ACTION = "action"           # Pure fight action + heavy SFX, no dialogue
+    IMPACT = "impact"           # Single big hit — flash frame + bass hit SFX
+    TENSION = "tension"         # Quiet buildup — ambient only, slow camera
+    TRANSITION = "transition"   # Scene change — whoosh SFX, establishing shot
+
+
+class SFXCue(str, Enum):
+    """Pre-built sound effect identifiers mapped to audio files."""
+
+    # Impacts
+    PUNCH_HEAVY = "punch_heavy"
+    PUNCH_LIGHT = "punch_light"
+    KICK = "kick"
+    BODY_SLAM = "body_slam"
+
+    # Destruction
+    EXPLOSION = "explosion"
+    GLASS_SHATTER = "glass_shatter"
+    CONCRETE_CRUMBLE = "concrete_crumble"
+    METAL_IMPACT = "metal_impact"
+
+    # Movement
+    WHOOSH = "whoosh"
+    SONIC_BOOM = "sonic_boom"
+    LANDING_HEAVY = "landing_heavy"
+    CAPE_FLUTTER = "cape_flutter"
+
+    # Energy/Powers
+    LIGHTNING = "lightning"
+    ENERGY_BLAST = "energy_blast"
+    POWER_CHARGE = "power_charge"
+    ELECTRIC_CRACKLE = "electric_crackle"
+
+    # Atmosphere
+    THUNDER_RUMBLE = "thunder_rumble"
+    RAIN = "rain"
+    WIND = "wind"
+    FIRE_CRACKLE = "fire_crackle"
+
+    # Dramatic
+    SILENCE = "silence"           # Deliberate 1-2s of silence for tension
+    BASS_DROP = "bass_drop"       # Deep sub-bass hit for dramatic moments
+    HEARTBEAT = "heartbeat"       # Tension builder
+    SHOCKWAVE = "shockwave"       # Expanding energy ring
+
+
+# ---------------------------------------------------------------------------
+# Character voice config
+# ---------------------------------------------------------------------------
+
+
+class CharacterVoice(BaseModel):
+    """Configuration for a character's ElevenLabs voice."""
+
+    character_id: str = Field(..., description="Identifier (e.g. 'hero1', 'hero2')")
+    name: str = Field(..., description="Character display name for the script")
+    voice_id: str = Field(..., description="ElevenLabs voice ID")
+    voice_style: str = Field(
+        default="dramatic",
+        description="Speaking style: dramatic, aggressive, calm, taunting",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Beat — the fundamental unit of a cinematic script
+# ---------------------------------------------------------------------------
+
+
+class Beat(BaseModel):
+    """A single timed segment of the cinematic fight sequence.
+
+    Each beat represents 1-5 seconds of the final video. The pipeline
+    generates video, SFX, dialogue, and music independently for each beat,
+    then stitches them together.
+    """
+
+    beat_type: BeatType
+    duration_seconds: float = Field(
+        ..., gt=0, le=8, description="Duration in seconds (1-8)"
+    )
+
+    # Video generation
+    video_prompt: str = Field(
+        ..., description="Prompt for LTX-Video/Kling generation for this beat"
+    )
+    camera_angle: str = Field(
+        default="medium_shot",
+        description="Camera direction: close_up, medium_shot, wide_shot, aerial, low_angle",
+    )
+    flash_frame: bool = Field(
+        default=False,
+        description="Insert a 2-frame white flash at the start (for impacts)",
+    )
+
+    # Audio: SFX
+    sfx_cues: list[str] = Field(
+        default_factory=list,
+        description="Sound effects to play during this beat (known cues or custom names)",
+    )
+    sfx_offset_ms: int = Field(
+        default=0,
+        description="Millisecond offset from beat start for the primary SFX hit",
+    )
+
+    # Audio: Dialogue (only for DIALOGUE beats)
+    character_id: Optional[str] = Field(
+        default=None,
+        description="Which character speaks (matches CharacterVoice.character_id)",
+    )
+    dialogue_text: Optional[str] = Field(
+        default=None,
+        description="What the character says (short — max 15 words)",
+    )
+
+    # Sequencing
+    beat_index: int = Field(default=0, description="Position in the sequence (0-based)")
+
+
+# ---------------------------------------------------------------------------
+# CinematicScript — the full fight sequence
+# ---------------------------------------------------------------------------
+
+
+class CinematicScript(BaseModel):
+    """Complete cinematic fight script — a sequence of timed beats.
+
+    Generated by Claude via CinematicScriptWriter, consumed by the audio mixer
+    and visual generator to produce a synchronized fight sequence.
+    """
+
+    video_id: str
+    title: str = Field(..., description="Fight title (e.g. 'Superman vs Thor')")
+    hero1_name: str
+    hero1_description: str = Field(..., description="Visual description for video gen")
+    hero2_name: str
+    hero2_description: str = Field(..., description="Visual description for video gen")
+    setting: str = Field(..., description="Scene environment description")
+    total_duration_seconds: float = Field(
+        ..., description="Sum of all beat durations"
+    )
+    beats: list[Beat] = Field(..., min_length=5, description="Ordered beat sequence")
+
+    # Voice assignments
+    voices: list[CharacterVoice] = Field(
+        default_factory=list,
+        description="Voice config for each character",
+    )
+
+    # Music
+    music_intensity_curve: list[float] = Field(
+        default_factory=list,
+        description=(
+            "Per-beat music intensity (0.0-1.0). 0=silent, 0.3=ambient, "
+            "0.7=building, 1.0=full orchestra. Length matches len(beats)."
+        ),
+    )
