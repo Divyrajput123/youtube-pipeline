@@ -896,6 +896,24 @@ class Orchestrator:
         )
         self._log_entries = []
 
+        # Guard: don't resume videos that were intentionally rejected or already done
+        try:
+            current_status = await self._content_calendar._get_status(video_id)
+            skip_statuses = {
+                PipelineStatus.SCRIPT_REJECTED,
+                PipelineStatus.PUBLISHED,
+                PipelineStatus.SCHEDULED,
+                PipelineStatus.PIPELINE_ERROR,
+            }
+            if current_status in skip_statuses:
+                logger.info(
+                    "resume_pipeline: skipping video_id=%s — status is %s",
+                    video_id, current_status.value,
+                )
+                return
+        except Exception as exc:
+            logger.warning("resume_pipeline: could not check status for %s: %s", video_id, exc)
+
         self._emit_log(
             event_type="stage_transition",
             stage_name="orchestrator",
