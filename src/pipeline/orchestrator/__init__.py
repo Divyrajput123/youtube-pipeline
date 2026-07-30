@@ -719,6 +719,12 @@ class Orchestrator:
                 video_id, exc,
             )
 
+        # Record pipeline end time — pipeline work is done once video is uploaded + scheduled
+        try:
+            await self._content_calendar.set_pipeline_end_time(video_id)
+        except Exception as exc:
+            logger.warning("Could not set pipeline_end_time for %s: %s", video_id, exc)
+
         # ------------------------------------------------------------------ #
         # Post-upload enhancements: Shorts extraction + end-screen            #
         # ------------------------------------------------------------------ #
@@ -857,13 +863,7 @@ class Orchestrator:
         )
         await self._flush_log(run_id, video_id)
 
-        # Record pipeline end time in Notion
-        try:
-            await self._content_calendar.set_pipeline_end_time(video_id)
-        except Exception as exc:
-            logger.warning("Could not set pipeline_end_time for %s: %s", video_id, exc)
-
-        logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)
+        logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)        logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)
         return run_id
 
     # ------------------------------------------------------------------
