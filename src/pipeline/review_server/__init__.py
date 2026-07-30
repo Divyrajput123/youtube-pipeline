@@ -65,6 +65,28 @@ class _PendingReview:
 
 _pending: dict[str, _PendingReview] = {}   # token → PendingReview
 
+# Temp media files served via /media/{name} for Instagram Reel uploads
+_media_files: dict[str, str] = {}   # filename → local file path
+
+
+def register_media_file(filename: str, local_path: str) -> str:
+    """Register a local file to be served via the review server's /media/ endpoint.
+
+    Args:
+        filename: The filename to serve it as (e.g., "reel_abc123.mp4").
+        local_path: Absolute path to the file on disk.
+
+    Returns:
+        The public URL path (combine with PIPELINE_PUBLIC_URL to get full URL).
+    """
+    _media_files[filename] = local_path
+    return f"/media/{filename}"
+
+
+def unregister_media_file(filename: str) -> None:
+    """Remove a file from the media serving registry."""
+    _media_files.pop(filename, None)
+
 
 def create_review_token(
     video_id: str,
@@ -283,6 +305,23 @@ async def start_review_server(port: Optional[int] = None) -> None:
             elif parsed.path == "/health":
                 body = f'{{"status":"ok","pending":{len(_pending)}}}'.encode()
                 _write_http(writer, 200, "application/json", body)
+
+            # ---- GET /media/{filename} — serve temp video files for Instagram ----
+            elif parsed.path.startswith("/media/"):
+                filename = parsed.path[len("/media/"):]
+                if filename in _media_files:
+                    file_path = _media_files[filename]
+                    import pathlib as _pl  # noqa: PLC0415
+                    fp = _pl.Path(file_path)
+                    if fp.exists():
+                        data = fp.read_bytes()
+                        _write_http(writer, 200, "video/mp4", data)
+                        logger.info("Served media file: %s (%d bytes)", filename, len(data))
+                    else:
+                        _write_http(writer, 404, "text/plain", b"File not found on disk")
+                else:
+                    _write_http(writer, 404, "text/plain", b"Unknown media file")
+
             else:
                 _write_http(writer, 404, "text/plain", b"Not found")
 
@@ -433,5 +472,7 @@ _HTML_REJECTED = """<!DOCTYPE html>
 __all__ = [
     "create_review_token",
     "get_review_urls",
+    "register_media_file",
     "start_review_server",
+    "unregister_media_file",
 ]

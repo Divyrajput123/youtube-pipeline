@@ -602,6 +602,12 @@ class Orchestrator:
                 logger.warning("Could not update metadata_url in Notion: %s", exc)
 
         # Advance to Awaiting Final Review (Review Gate 2)
+        # Record pipeline end time BEFORE the gate — all generation work is done
+        try:
+            await self._content_calendar.set_pipeline_end_time(video_id)
+        except Exception as exc:
+            logger.warning("Could not set pipeline_end_time for %s: %s", video_id, exc)
+
         await self._update_calendar_status(
             video_id, PipelineStatus.AWAITING_FINAL_REVIEW, run_id
         )
@@ -717,12 +723,6 @@ class Orchestrator:
                 video_id, exc,
             )
 
-        # Record pipeline end time — pipeline work is done once video is uploaded + scheduled
-        try:
-            await self._content_calendar.set_pipeline_end_time(video_id)
-        except Exception as exc:
-            logger.warning("Could not set pipeline_end_time for %s: %s", video_id, exc)
-
         # ------------------------------------------------------------------ #
         # Post-upload enhancements: Shorts extraction + end-screen            #
         # ------------------------------------------------------------------ #
@@ -757,36 +757,19 @@ class Orchestrator:
                 )
 
                 if reel_local_path:
-                    # 2. Upload the encoded file to Drive and generate a public URL
+                    # 2. Serve the video file through the pipeline's ngrok tunnel
                     #    Instagram Graph API needs a directly accessible video URL.
-                    #    We upload to Drive (public sharing), then use the webContentLink
-                    #    which provides a direct download without redirects/confirmation pages.
-                    import pathlib as _pl  # noqa: PLC0415
-                    reel_bytes = _pl.Path(reel_local_path).read_bytes()
-                    reel_drive_url = await self._asset_store.write(
-                        video_id=video_id,
-                        subfolder=SubFolder.VIDEOS,
-                        filename="reel.mp4",
-                        content=reel_bytes,
-                    )
+                    #    Google Drive URLs don't work (redirects, virus scan pages).
+                    #    Instead, serve the file via our existing review webhook server.
+                    import uuid as _uuid  # noqa: PLC0415
+                    from pipeline.review_server import register_media_file, unregister_media_file
 
-                    # Extract file ID and build the direct content URL
-                    import re as _re  # noqa: PLC0415
-                    drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
-                    if drive_id_match:
-                        file_id = drive_id_match.group(1)
-                        # Get the webContentLink (direct download) via Drive API
-                        try:
-                            web_content_link = await self._asset_store._drive.get_web_content_link(file_id)
-                            reel_public_url = web_content_link
-                        except Exception:
-                            # Fallback to uc?export with confirm bypass
-                            reel_public_url = (
-                                f"https://drive.google.com/uc?id={file_id}"
-                                f"&export=download&confirm=t"
-                            )
-                    else:
-                        reel_public_url = reel_drive_url
+                    reel_filename = f"reel_{_uuid.uuid4().hex[:8]}.mp4"
+                    register_media_file(reel_filename, reel_local_path)
+
+                    public_base = os.environ.get("PIPELINE_PUBLIC_URL", "http://localhost:8742")
+                    reel_public_url = f"{public_base}/media/{reel_filename}"
+                    logger.info("Instagram Reel: serving at %s", reel_public_url)
 
                     youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
                     thumbnail_url = visual.thumbnail_url or None
@@ -815,9 +798,10 @@ class Orchestrator:
                             "start_pipeline: Instagram Reel failed — %s", reel_result.error,
                         )
 
-                    # 4. Cleanup temp encoded file
-                    import pathlib as _pl  # noqa: PLC0415
-                    reel_dir = _pl.Path(reel_local_path).parent
+                    # 4. Cleanup: unregister media file and remove temp directory
+                    unregister_media_file(reel_filename)
+                    import pathlib as _pl_cleanup  # noqa: PLC0415
+                    reel_dir = _pl_cleanup.Path(reel_local_path).parent
                     import shutil as _shutil  # noqa: PLC0415
                     _shutil.rmtree(reel_dir, ignore_errors=True)
                 else:
