@@ -8,6 +8,7 @@ from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
 from pipeline.config import is_production_mode
 from pipeline.content_calendar import Content_Calendar, NotionMCPClient
 from pipeline.cross_poster import Cross_Poster
+from pipeline.instagram_reels import InstagramReelsClient
 from pipeline.metadata_generator import Metadata_Generator
 from pipeline.models import NotificationChannels, PipelineConfig, SmtpConfig
 from pipeline.narration_generator import ElevenLabsMCPClient, Narration_Generator
@@ -213,6 +214,25 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
     )
 
     # ------------------------------------------------------------------
+    # 11b. Instagram Reels Client
+    # ------------------------------------------------------------------
+    instagram_reels_client = None
+    if config.instagram_reels.enabled:
+        # Resolve ${...} placeholders from environment
+        ig_token = config.instagram_reels.access_token or ""
+        ig_account_id = config.instagram_reels.instagram_account_id or ""
+
+        if ig_token.startswith("${") and ig_token.endswith("}"):
+            ig_token = os.environ.get(ig_token[2:-1], "")
+        if ig_account_id.startswith("${") and ig_account_id.endswith("}"):
+            ig_account_id = os.environ.get(ig_account_id[2:-1], "")
+
+        instagram_reels_client = InstagramReelsClient(
+            access_token=ig_token,
+            instagram_account_id=ig_account_id,
+        )
+
+    # ------------------------------------------------------------------
     # 12. Orchestrator
     # ------------------------------------------------------------------
     return Orchestrator(
@@ -225,6 +245,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
         metadata_generator=metadata_generator,
         publisher=publisher,
         cross_poster=cross_poster,
+        instagram_reels_client=instagram_reels_client,
         asset_store=asset_store,
         content_calendar=content_calendar,
         notifier=notifier,

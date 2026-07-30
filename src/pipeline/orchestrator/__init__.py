@@ -29,6 +29,7 @@ from typing import Any, Callable, Coroutine, Literal, Optional
 from pipeline.asset_store import Asset_Store, AssetStoreError
 from pipeline.content_calendar import Content_Calendar
 from pipeline.cross_poster import Cross_Poster
+from pipeline.instagram_reels import InstagramReelsClient, upload_reel_from_short
 from pipeline.metadata_generator import Metadata_Generator
 from pipeline.models import (
     BatchRecord,
@@ -233,6 +234,7 @@ class Orchestrator:
         metadata_generator: Metadata_Generator,
         publisher: Publisher,
         cross_poster: Cross_Poster,
+        instagram_reels_client: Optional[InstagramReelsClient],
         asset_store: Asset_Store,
         content_calendar: Content_Calendar,
         notifier: Notifier,
@@ -246,6 +248,7 @@ class Orchestrator:
         self._metadata_generator = metadata_generator
         self._publisher = publisher
         self._cross_poster = cross_poster
+        self._instagram_reels_client = instagram_reels_client
         self._asset_store = asset_store
         self._content_calendar = content_calendar
         self._notifier = notifier
@@ -692,6 +695,7 @@ class Orchestrator:
             )
 
         # Auto-schedule this single video in the next free slot on YouTube
+        scheduled_publish_dt = None  # Track for Instagram Reels sync
         try:
             slots = await self._find_next_free_slot(n_slots=1)
             publish_dt = slots[0]
@@ -704,6 +708,7 @@ class Orchestrator:
                 youtube_video_id=yt_ref.youtube_video_id,
                 publish_datetime=publish_dt,
             )
+            scheduled_publish_dt = publish_dt
             logger.info(
                 "start_pipeline: auto-scheduled video_id=%s for %s",
                 video_id, publish_dt.strftime("%Y-%m-%d %H:%M UTC"),
@@ -726,11 +731,77 @@ class Orchestrator:
                 mp4_url=mp4_source,
                 metadata=metadata,
                 full_video_id=yt_ref.youtube_video_id,
+                publish_at=scheduled_publish_dt,
             )
             if short_id:
-                logger.info("start_pipeline: Short uploaded — %s", short_id)
+                schedule_note = ""
+                if scheduled_publish_dt:
+                    schedule_note = f" (scheduled: {scheduled_publish_dt.strftime('%Y-%m-%d %H:%M UTC')})"
+                logger.info("start_pipeline: Short uploaded — %s%s", short_id, schedule_note)
         except Exception as exc:
             logger.warning("start_pipeline: Shorts extraction failed (non-fatal): %s", exc)
+
+        # Upload Instagram Reel (separate encoding from Shorts, synced schedule)
+        if self._instagram_reels_client and self._config.instagram_reels.enabled:
+            try:
+                # 1. Encode video specifically for Instagram Reels
+                #    (1080x1920, 4Mbps, 30fps, AAC 192k — higher quality than Shorts)
+                mp4_source = visual.mp4_url or visual.mp4_path
+                reel_local_path = await self._publisher.encode_for_instagram_reels(
+                    video_id=video_id,
+                    mp4_url=mp4_source,
+                )
+
+                if reel_local_path:
+                    # 2. Upload the encoded file to Drive to get a public URL
+                    #    (Instagram Graph API requires a publicly accessible video URL)
+                    import pathlib as _pl  # noqa: PLC0415
+                    reel_bytes = _pl.Path(reel_local_path).read_bytes()
+                    reel_public_url = await self._asset_store.write(
+                        video_id=video_id,
+                        subfolder=SubFolder.VIDEOS,
+                        filename="reel.mp4",
+                        content=reel_bytes,
+                    )
+
+                    youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
+                    thumbnail_url = visual.thumbnail_url or None
+
+                    # 3. Upload/schedule Reel at the same time as YouTube publish
+                    reel_result = await upload_reel_from_short(
+                        client=self._instagram_reels_client,
+                        video_public_url=reel_public_url,
+                        metadata=metadata,
+                        youtube_url=youtube_full_url,
+                        thumbnail_url=thumbnail_url,
+                        extra_hashtags=self._config.instagram_reels.extra_hashtags,
+                        scheduled_publish_time=scheduled_publish_dt,
+                    )
+
+                    if reel_result.success:
+                        schedule_note = ""
+                        if scheduled_publish_dt:
+                            schedule_note = f" (scheduled for {scheduled_publish_dt.strftime('%Y-%m-%d %H:%M UTC')})"
+                        logger.info(
+                            "start_pipeline: Instagram Reel ready — %s (%s)%s",
+                            reel_result.reel_id, reel_result.permalink, schedule_note,
+                        )
+                    else:
+                        logger.warning(
+                            "start_pipeline: Instagram Reel failed — %s", reel_result.error,
+                        )
+
+                    # 4. Cleanup temp encoded file
+                    import pathlib as _pl  # noqa: PLC0415
+                    reel_dir = _pl.Path(reel_local_path).parent
+                    import shutil as _shutil  # noqa: PLC0415
+                    _shutil.rmtree(reel_dir, ignore_errors=True)
+                else:
+                    logger.warning(
+                        "start_pipeline: Instagram Reels encoding failed — skipping Reel upload"
+                    )
+            except Exception as exc:
+                logger.warning("start_pipeline: Instagram Reels upload failed (non-fatal): %s", exc)
 
         # Add end-screen linking to best-performing video (best-effort)
         try:
@@ -774,6 +845,13 @@ class Orchestrator:
             video_id=video_id,
         )
         await self._flush_log(run_id, video_id)
+
+        # Record pipeline end time in Notion
+        try:
+            await self._content_calendar.set_pipeline_end_time(video_id)
+        except Exception as exc:
+            logger.warning("Could not set pipeline_end_time for %s: %s", video_id, exc)
+
         logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)
         return run_id
 
@@ -1132,6 +1210,13 @@ class Orchestrator:
             video_id=video_id,
         )
         await self._flush_log(run_id, video_id)
+
+        # Record pipeline end time in Notion
+        try:
+            await self._content_calendar.set_pipeline_end_time(video_id)
+        except Exception as exc:
+            logger.warning("Could not set pipeline_end_time for %s: %s", video_id, exc)
+
         logger.info("Orchestrator.resume_pipeline completed: run_id=%s", run_id)
 
     # ------------------------------------------------------------------

@@ -269,6 +269,7 @@ class VideoRecord(BaseModel):
     youtube_video_id: Optional[str] = None
     unlisted_url: Optional[str] = None
     pipeline_run_timestamp: datetime
+    pipeline_end_time: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -404,6 +405,24 @@ class CrossPostingConfig(BaseModel):
     facebook: PlatformCrossPostConfig = Field(default_factory=lambda: PlatformCrossPostConfig(enabled=False))
 
 
+class InstagramReelsConfig(BaseModel):
+    """Configuration for Instagram Reels auto-posting alongside YouTube Shorts.
+
+    Requires a Facebook/Instagram long-lived access token and the numeric
+    Instagram Business/Creator account ID.
+    """
+
+    enabled: bool = False
+    access_token: Optional[str] = None
+    instagram_account_id: Optional[str] = None
+    share_to_feed: bool = True
+    extra_hashtags: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Additional niche hashtags to include in Reel captions (without # prefix).",
+    )
+
+
 class BatchModeConfig(BaseModel):
     """Batch processing settings."""
 
@@ -418,6 +437,7 @@ class PipelineConfig(BaseModel):
     voice_id: str
     notification_channels: NotificationChannels = Field(default_factory=NotificationChannels)
     cross_posting: CrossPostingConfig = Field(default_factory=CrossPostingConfig)
+    instagram_reels: InstagramReelsConfig = Field(default_factory=InstagramReelsConfig)
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
     visual_video_provider: Literal["kling", "runpod"] = "kling"

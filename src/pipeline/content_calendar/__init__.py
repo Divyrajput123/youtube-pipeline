@@ -556,6 +556,44 @@ class Content_Calendar:
             dt.isoformat(),
         )
 
+    async def set_pipeline_end_time(
+        self,
+        video_id: str,
+        end_time: Optional[datetime] = None,
+    ) -> None:
+        """Record when the pipeline run finished for *video_id*.
+
+        Sets the ``pipeline_end_time`` date property in Notion. If *end_time*
+        is not provided, the current UTC time is used.
+
+        Args:
+            video_id: The pipeline video identifier.
+            end_time: UTC datetime when the pipeline finished. Defaults to now.
+
+        Raises:
+            ContentCalendarError: If the Notion API fails after all retries.
+        """
+        if end_time is None:
+            end_time = self._now()
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+
+        page_id = await self._resolve_page_id(video_id)
+        properties = {
+            "pipeline_end_time": {
+                "date": {"start": end_time.isoformat()}
+            }
+        }
+        await _retry_notion(
+            lambda: self._client.update_page(page_id, properties),
+            operation_name=f"set_pipeline_end_time({video_id})",
+        )
+        logger.info(
+            "Set pipeline_end_time for video_id=%s to %s",
+            video_id,
+            end_time.isoformat(),
+        )
+
     async def get_scheduled_datetimes(self) -> list[datetime]:
         """Return all future scheduled_publish_datetimes across all calendar records.
 
