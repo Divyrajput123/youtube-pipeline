@@ -40,5 +40,13 @@
     "linkedin":  { "enabled": false, "access_token": null },
     "instagram": { "enabled": false, "access_token": null },
     "facebook":  { "enabled": false, "page_access_token": null }
+  },
+
+  "instagram_reels": {
+    "enabled": true,
+    "access_token": "${INSTAGRAM_ACCESS_TOKEN}",
+    "instagram_account_id": "${INSTAGRAM_ACCOUNT_ID}",
+    "share_to_feed": true,
+    "extra_hashtags": []
   }
 }

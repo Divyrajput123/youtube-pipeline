@@ -82,6 +82,10 @@ jobs:
           RUNPOD_ENDPOINT_ID=${{ secrets.RUNPOD_ENDPOINT_ID }}
           RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}
+          FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}
+          FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}
           EOF
           echo "✅ .env created"
 

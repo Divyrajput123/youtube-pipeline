@@ -370,31 +370,43 @@ class YouTubeDataAPIClient:
 
         def _sync_list() -> list[datetime]:
             scheduled: list[datetime] = []
-            # Use search().list() with forMine=True to find upcoming/scheduled videos
-            search_req = self._service.search().list(
-                part="id",
-                forMine=True,
-                type="video",
-                eventType="upcoming",
-                maxResults=50,
+            # List private videos on the channel — scheduled uploads are private
+            # with a publishAt date set. The search API's eventType=upcoming is
+            # for live streams only, so we use the uploads playlist approach.
+            ch_resp = self._service.channels().list(
+                part="contentDetails", mine=True
+            ).execute()
+            items = ch_resp.get("items", [])
+            if not items:
+                return scheduled
+            uploads_playlist_id = (
+                items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
             )
-            search_resp = search_req.execute()
+
+            # Get recent videos from uploads playlist
+            pl_resp = self._service.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_playlist_id,
+                maxResults=50,
+            ).execute()
             video_ids = [
-                item["id"]["videoId"]
-                for item in search_resp.get("items", [])
+                item["snippet"]["resourceId"]["videoId"]
+                for item in pl_resp.get("items", [])
+                if item["snippet"].get("resourceId", {}).get("videoId")
             ]
             if not video_ids:
                 return scheduled
 
-            # Fetch status details for each found video
+            # Fetch status details — look for private videos with publishAt
             details_resp = self._service.videos().list(
                 part="status",
-                id=",".join(video_ids),
+                id=",".join(video_ids[:50]),
             ).execute()
 
             for item in details_resp.get("items", []):
-                publish_at = item.get("status", {}).get("publishAt")
-                if publish_at:
+                status = item.get("status", {})
+                publish_at = status.get("publishAt")
+                if publish_at and status.get("privacyStatus") == "private":
                     dt = datetime.fromisoformat(publish_at.replace("Z", "+00:00"))
                     scheduled.append(dt.astimezone(_tz.utc))
 
@@ -507,17 +519,23 @@ class YouTubeDataAPIClient:
         title: str,
         description: str,
         tags: list[str],
+        publish_at: Optional[datetime] = None,
     ) -> dict[str, str]:
         """Upload a vertical (9:16) Short video to YouTube.
 
         Shorts are identified by YouTube via the #Shorts hashtag in the title
-        and vertical aspect ratio. Uploaded as public.
+        and vertical aspect ratio.
+
+        If publish_at is provided, the Short is uploaded as Private with a
+        publishAt timestamp so it goes live at the same time as the main video.
+        If None, uploads as Public (immediate).
 
         Args:
             mp4_path: Local path to the vertical MP4 file.
             title: Short title (must end with ' #Shorts' for algorithm pickup).
             description: Short description with link to full video.
             tags: Tag list.
+            publish_at: Optional UTC datetime to schedule the Short.
 
         Returns:
             Dict with "id" and "url" keys.
@@ -525,13 +543,24 @@ class YouTubeDataAPIClient:
         if self._fallback_mode:
             import uuid
             fake_id = f"SHORT_{uuid.uuid4().hex[:11]}"
-            logger.info("YouTube fallback: simulated Short upload → %s", fake_id)
+            schedule_info = f" (scheduled: {publish_at.isoformat()})" if publish_at else ""
+            logger.info("YouTube fallback: simulated Short upload → %s%s", fake_id, schedule_info)
             return {"id": fake_id, "url": f"https://www.youtube.com/shorts/{fake_id}"}
 
         import asyncio as _asyncio  # noqa: PLC0415
         from googleapiclient.http import MediaFileUpload  # type: ignore[import-untyped]
 
         def _sync_upload() -> dict[str, str]:
+            # If scheduled, upload as Private with publishAt so it goes live
+            # at the same time as the main video
+            if publish_at:
+                status_body: dict[str, Any] = {
+                    "privacyStatus": "private",
+                    "publishAt": publish_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                }
+            else:
+                status_body = {"privacyStatus": "public"}
+
             body = {
                 "snippet": {
                     "title": title[:100],
@@ -539,7 +568,7 @@ class YouTubeDataAPIClient:
                     "tags": tags[:500],
                     "categoryId": "24",
                 },
-                "status": {"privacyStatus": "public"},
+                "status": status_body,
             }
             media = MediaFileUpload(mp4_path, mimetype="video/mp4", resumable=True)
             request = self._service.videos().insert(
@@ -647,24 +676,30 @@ class YouTubeDataAPIClient:
                 end_date = date.today()
                 start_date = end_date - timedelta(days=28)
 
-                # Query views grouped by hour — YouTube Analytics dimension "hour"
-                # returns views per hour of the day (0-23)
+                # YouTube Analytics API doesn't support "hour" dimension directly.
+                # Use "day" dimension to get views per day, then use the channel's
+                # configured publish time as the peak hour (most reliable signal).
+                # Falls back to None which lets the scheduler use config defaults.
                 resp = analytics.reports().query(
                     ids="channel==MINE",
                     startDate=start_date.isoformat(),
                     endDate=end_date.isoformat(),
                     metrics="views",
-                    dimensions="hour",
+                    dimensions="day",
                     sort="-views",
-                    maxResults=1,
+                    maxResults=7,
                 ).execute()
 
                 rows = resp.get("rows", [])
                 if rows:
-                    # First row is the hour with most views
-                    peak_hour = int(rows[0][0])
-                    logger.info("YouTube Analytics: peak audience hour is %d UTC", peak_hour)
-                    return peak_hour
+                    # Analytics available — channel is active.
+                    # Return None to use the configured publish time (more reliable
+                    # than guessing hourly patterns from daily data).
+                    logger.info(
+                        "YouTube Analytics: channel has %d days of data, "
+                        "using configured publish time for scheduling",
+                        len(rows),
+                    )
                 return None
             except Exception as exc:
                 logger.warning("YouTube Analytics query failed (non-fatal): %s", exc)
@@ -1126,6 +1161,7 @@ class Publisher:
         mp4_url: str,
         metadata: "MetadataPackage",
         full_video_id: str,
+        publish_at: Optional[datetime] = None,
     ) -> Optional[str]:
         """Extract first 55 seconds from the full video, re-encode as 9:16, upload as Short.
 
@@ -1139,6 +1175,9 @@ class Publisher:
             mp4_url: Google Drive URL of the full MP4.
             metadata: MetadataPackage for title/tags context.
             full_video_id: YouTube video ID of the full video (for linking).
+            publish_at: Optional UTC datetime to schedule the Short. If provided,
+                the Short is uploaded as Private and scheduled to go public at this
+                time (same as the main video). If None, publishes immediately.
 
         Returns:
             YouTube Short video ID, or None if extraction/upload fails.
@@ -1156,15 +1195,25 @@ class Publisher:
                 short_path = _pl.Path(tmpdir) / "short.mp4"
                 full_path.write_bytes(video_bytes)
 
-                # 2. Extract first 55s, crop to center 9:16, scale to 1080x1920
-                # Filter: crop to 9:16 aspect from center, then scale to 1080x1920
+                # 2. Extract first 55s, scale to fill 9:16 frame, crop to exact 1080x1920
+                # Strategy: scale so width = 1080 (maintaining aspect ratio),
+                # then crop height to 1920 from center. This ensures the video
+                # FILLS the entire frame with no black bars regardless of source AR.
+                # If source is wider than 9:16, we scale height to 1920 first then crop width.
                 ffmpeg_cmd = [
                     "ffmpeg", "-y",
                     "-i", str(full_path),
                     "-t", "55",
-                    "-vf", "crop=ih*9/16:ih,scale=1080:1920",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-vf", (
+                        "scale=1080:1920:force_original_aspect_ratio=increase,"
+                        "crop=1080:1920,"
+                        "setsar=1"
+                    ),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-profile:v", "high", "-level:v", "4.0",
+                    "-pix_fmt", "yuv420p",
+                    "-r", "30",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-movflags", "+faststart",
                     str(short_path),
                 ]
@@ -1185,22 +1234,119 @@ class Publisher:
                     f"#Shorts {' '.join(metadata.hashtags[:3])}"
                 )
 
-                # 4. Upload
+                # 4. Upload (scheduled if publish_at is set)
                 result = await self._yt.upload_short(
                     mp4_path=str(short_path),
                     title=short_title,
                     description=short_desc,
                     tags=metadata.tags[:10],
+                    publish_at=publish_at,
                 )
+                schedule_info = ""
+                if publish_at:
+                    schedule_info = f" (scheduled: {publish_at.strftime('%Y-%m-%d %H:%M UTC')})"
                 logger.info(
-                    "Publisher.extract_and_upload_short: uploaded Short %s for video_id=%s",
-                    result["id"], video_id,
+                    "Publisher.extract_and_upload_short: uploaded Short %s for video_id=%s%s",
+                    result["id"], video_id, schedule_info,
                 )
                 return result["id"]
 
         except Exception as exc:
             logger.warning(
                 "Publisher.extract_and_upload_short failed for video_id=%s (non-fatal): %s",
+                video_id, exc,
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # Instagram Reels encoding
+    # ------------------------------------------------------------------
+
+    async def encode_for_instagram_reels(
+        self,
+        video_id: str,
+        mp4_url: str,
+    ) -> Optional[str]:
+        """Encode a vertical clip optimized for Instagram Reels specs.
+
+        Instagram Reels has different quality requirements than YouTube Shorts:
+          - Resolution: 1080x1920 (9:16)
+          - Frame rate: 30 fps (consistent, no VFR)
+          - Video bitrate: 4 Mbps (higher quality than Shorts' CRF 23)
+          - Audio: AAC 192 kbps (Instagram penalizes low audio quality)
+          - Duration: up to 90 seconds (we use first 60s for optimal engagement)
+          - Container: MP4 with faststart for streaming
+
+        Args:
+            video_id: Pipeline video ID (for logging).
+            mp4_url: Google Drive URL or local path to the full MP4.
+
+        Returns:
+            Local file path to the encoded Reel MP4, or None on failure.
+            Caller is responsible for cleanup after upload.
+        """
+        import subprocess as _sp  # noqa: PLC0415
+        import tempfile as _tmp  # noqa: PLC0415
+        import pathlib as _pl  # noqa: PLC0415
+
+        try:
+            # Download full video
+            video_bytes = await self._yt._fetch_bytes(mp4_url)
+
+            # Use a persistent temp directory (caller cleans up)
+            tmpdir = _tmp.mkdtemp(prefix="ig_reel_")
+            full_path = _pl.Path(tmpdir) / "full.mp4"
+            reel_path = _pl.Path(tmpdir) / "reel.mp4"
+            full_path.write_bytes(video_bytes)
+
+            # Instagram Reels encoding:
+            # - 60s max (sweet spot for engagement vs 90s allowed)
+            # - 1080x1920 (crop center then scale)
+            # - 30fps constant
+            # - H.264 High profile at 4 Mbps (Instagram's recommended range)
+            # - AAC 192k stereo (IG penalizes low audio quality in reach)
+            # - faststart for streaming preview
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-i", str(full_path),
+                "-t", "60",
+                "-vf", (
+                    "scale=1080:1920:force_original_aspect_ratio=increase,"
+                    "crop=1080:1920,"
+                    "setsar=1,"
+                    "fps=30"
+                ),
+                "-c:v", "libx264",
+                "-profile:v", "high",
+                "-level:v", "4.0",
+                "-b:v", "4M",
+                "-maxrate", "5M",
+                "-bufsize", "8M",
+                "-preset", "medium",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-movflags", "+faststart",
+                "-pix_fmt", "yuv420p",
+                str(reel_path),
+            ]
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: _sp.run(ffmpeg_cmd, capture_output=True, timeout=180, check=True),
+            )
+
+            logger.info(
+                "Publisher.encode_for_instagram_reels: encoded %s → %s",
+                video_id, reel_path,
+            )
+            return str(reel_path)
+
+        except Exception as exc:
+            logger.warning(
+                "Publisher.encode_for_instagram_reels failed for video_id=%s (non-fatal): %s",
                 video_id, exc,
             )
             return None

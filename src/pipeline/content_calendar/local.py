@@ -92,6 +92,17 @@ class LocalContentCalendar:
         self._records[video_id]["scheduled_publish_datetime"] = dt.isoformat()
         self._save()
 
+    async def set_pipeline_end_time(self, video_id: str, end_time: Optional[datetime] = None) -> None:
+        """Record when the pipeline run finished for this video."""
+        if end_time is None:
+            end_time = self._now()
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        if video_id not in self._records:
+            raise Exception(f"No record found for video_id='{video_id}'")
+        self._records[video_id]["pipeline_end_time"] = end_time.isoformat()
+        self._save()
+
     async def get_scheduled_datetimes(self) -> list[datetime]:
         """Return all future scheduled_publish_datetimes across all records."""
         now = self._now()

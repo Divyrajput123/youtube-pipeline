@@ -433,6 +433,7 @@ class ViewmaxMCPClient:
             # Poll until terminal status (max 20 minutes = 120 × 10s)
             # Use a separate client with a longer timeout for polling — the COMPLETED
             # response includes the full base64 MP4 (~2MB) which can take >30s to receive.
+            consecutive_404s = 0
             async with httpx.AsyncClient(timeout=180.0) as poll_client:
                 for attempt in range(120):
                     await asyncio.sleep(10)
@@ -442,6 +443,26 @@ class ViewmaxMCPClient:
                             headers=headers,
                         )
                         poll.raise_for_status()
+                        consecutive_404s = 0  # reset on success
+                    except httpx.HTTPStatusError as http_exc:
+                        if http_exc.response.status_code == 404:
+                            consecutive_404s += 1
+                            if consecutive_404s >= 3:
+                                # Job was purged/throttled by RunPod — fail fast
+                                raise RuntimeError(
+                                    f"RunPod job {job_id} no longer exists (404). "
+                                    "Job was likely throttled or expired."
+                                )
+                            logger.warning(
+                                "ViewmaxMCPClient: poll attempt %d got 404 (%d/3) — retrying",
+                                attempt + 1, consecutive_404s,
+                            )
+                            continue
+                        logger.warning(
+                            "ViewmaxMCPClient: poll attempt %d failed (%s) — retrying",
+                            attempt + 1, http_exc,
+                        )
+                        continue
                     except Exception as poll_exc:
                         logger.warning(
                             "ViewmaxMCPClient: poll attempt %d failed (%s) — retrying",
@@ -1511,8 +1532,12 @@ class Visual_Generator:
 
         Different search queries are used for each clip within a segment
         (varying keywords) so the visual variety matches the narration pacing.
+
+        Clips are generated in parallel batches (up to 5 concurrent) for speed.
+        A 3-minute video with ~46 clips runs in ~15 min instead of ~3 hours.
         """
         _CUT_EVERY_S: float = 3.88  # matches num_frames=97 at frame_rate=25, no looping
+        _MAX_CONCURRENT: int = 5    # parallel clip generation limit (match RunPod max workers)
 
         results: list[ClipResult] = []
 
@@ -1526,7 +1551,10 @@ class Visual_Generator:
             max(1, round((segment_durations[i] if segment_durations and i < len(segment_durations) else 30.0) / _CUT_EVERY_S))
             for i in range(len(segments))
         )
-        global_clip_num = 0  # tracks position across all clips for scene phase
+
+        # Build a list of all clip tasks with their metadata
+        clip_tasks: list[dict] = []
+        global_clip_num = 0
 
         for seg_idx, segment in enumerate(segments):
             seg_duration = (
@@ -1542,26 +1570,58 @@ class Visual_Generator:
             )
 
             for clip_num in range(n_clips):
-                # Pass scene state so Claude knows the global narrative position
-                scene_state = {
+                clip_tasks.append({
+                    "seg_idx": seg_idx,
+                    "segment": segment,
+                    "clip_num": clip_num,
+                    "n_clips": n_clips,
                     "global_clip_num": global_clip_num,
                     "total_global_clips": total_clips_all_segments,
-                }
-                prompt = await _generate_video_prompt_with_claude(
-                    segment, clip_num, n_clips, scene_state=scene_state,
-                    script_topic=script_topic, character_descs=character_descs,
-                )
+                })
                 global_clip_num += 1
 
-                clip_result = await self._generate_single_clip(
-                    segment_index=seg_idx,
-                    segment=segment,
-                    prompt=prompt,
-                    video_id=video_id,
-                    seed=-1,  # random per clip for visual variety
-                )
-                results.append(clip_result)
+        logger.info(
+            "Visual_Generator: generating %d clips in parallel (max %d concurrent)",
+            len(clip_tasks), _MAX_CONCURRENT,
+        )
 
+        # Generate prompts first (sequential — uses Claude, needs ordering context)
+        prompts: list[str] = []
+        for task in clip_tasks:
+            scene_state = {
+                "global_clip_num": task["global_clip_num"],
+                "total_global_clips": task["total_global_clips"],
+            }
+            prompt = await _generate_video_prompt_with_claude(
+                task["segment"], task["clip_num"], task["n_clips"],
+                scene_state=scene_state,
+                script_topic=script_topic, character_descs=character_descs,
+            )
+            prompts.append(prompt)
+
+        # Generate clips in parallel batches using semaphore
+        # Stagger launches by 2s to let RunPod workers spin up gradually
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+
+        async def _gen_with_limit(idx: int) -> ClipResult:
+            # Stagger: wait idx * 2 seconds before acquiring semaphore
+            # This prevents all 10 requests hitting at the exact same moment
+            await asyncio.sleep(idx * 2.0)
+            async with semaphore:
+                return await self._generate_single_clip(
+                    segment_index=clip_tasks[idx]["seg_idx"],
+                    segment=clip_tasks[idx]["segment"],
+                    prompt=prompts[idx],
+                    video_id=video_id,
+                    seed=-1,
+                )
+
+        # Fire all clip generations concurrently (semaphore limits parallelism)
+        clip_results = await asyncio.gather(
+            *[_gen_with_limit(i) for i in range(len(clip_tasks))]
+        )
+
+        results = list(clip_results)
         return results
 
     async def _generate_single_clip(
