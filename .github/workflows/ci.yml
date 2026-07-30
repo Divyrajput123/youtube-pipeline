@@ -34,7 +34,7 @@ jobs:
       - name: Install Hatch
         run: |
           pipx install "hatch==$HATCH_VERSION"
-          pipx inject hatch "virtualenv<20.27"
+          pipx inject hatch "virtualenv==20.26.6"
       - name: Test Hatch version
         run: |
           HATCH_VERSION_INSTALLED=$(hatch --version)
