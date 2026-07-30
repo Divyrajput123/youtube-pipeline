@@ -49,8 +49,8 @@ _UPLOAD_BASE_DELAY_S = 30.0
 _UPLOAD_MAX_DELAY_S = 120.0
 
 # Container status polling
-_POLL_INTERVAL_S = 5.0
-_POLL_TIMEOUT_S = 60.0
+_POLL_INTERVAL_S = 10.0
+_POLL_TIMEOUT_S = 900.0  # 15 minutes — large video files need time to download + transcode
 
 # Instagram caption limit
 _CAPTION_CHAR_LIMIT = 2_200
