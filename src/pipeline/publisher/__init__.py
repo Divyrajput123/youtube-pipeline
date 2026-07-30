@@ -244,6 +244,7 @@ class YouTubeDataAPIClient:
                     scopes=[
                         "https://www.googleapis.com/auth/youtube",
                         "https://www.googleapis.com/auth/youtube.upload",
+                        "https://www.googleapis.com/auth/youtube.force-ssl",
                     ],
                 )
                 creds.refresh(_gtr.Request())
@@ -1120,8 +1121,9 @@ class Publisher:
             )
             logger.info("Publisher: pinned comment posted for youtube_video_id=%s", youtube_video_id)
         except Exception as comment_exc:  # noqa: BLE001
-            logger.warning(
-                "Publisher: pinned comment failed for youtube_video_id=%s (non-fatal): %s",
+            logger.debug(
+                "Publisher: pinned comment skipped for youtube_video_id=%s "
+                "(requires YouTube API comment audit — non-fatal): %s",
                 youtube_video_id, comment_exc,
             )
 

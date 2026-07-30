@@ -461,8 +461,6 @@ class InstagramReelsClient:
         }
         if cover_url:
             params["cover_url"] = cover_url
-        if alt_text:
-            params["alt_text"] = alt_text
 
         # For scheduled publishing: Instagram Content Publishing API uses
         # the `published` field set to false at container creation, then
