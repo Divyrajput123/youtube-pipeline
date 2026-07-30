@@ -485,14 +485,21 @@ class InstagramReelsClient:
                     return container_id
             except Exception as exc:
                 last_error = exc
+                # Log the response body for debugging 400/401 errors
+                error_detail = ""
+                if hasattr(exc, "response") and exc.response is not None:
+                    try:
+                        error_detail = f" Response: {exc.response.text[:500]}"
+                    except Exception:
+                        pass
                 if attempt < _UPLOAD_ATTEMPTS:
                     delay = min(
                         _UPLOAD_BASE_DELAY_S * (2 ** (attempt - 1)),
                         _UPLOAD_MAX_DELAY_S,
                     )
                     logger.warning(
-                        "Reel container creation failed (attempt %d/%d): %s — retrying in %.0fs",
-                        attempt, _UPLOAD_ATTEMPTS, exc, delay,
+                        "Reel container creation failed (attempt %d/%d): %s%s — retrying in %.0fs",
+                        attempt, _UPLOAD_ATTEMPTS, exc, error_detail, delay,
                     )
                     await asyncio.sleep(delay)
 

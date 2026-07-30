@@ -754,15 +754,26 @@ class Orchestrator:
 
                 if reel_local_path:
                     # 2. Upload the encoded file to Drive to get a public URL
-                    #    (Instagram Graph API requires a publicly accessible video URL)
+                    #    (Instagram Graph API requires a DIRECT download URL, not a viewer page)
                     import pathlib as _pl  # noqa: PLC0415
                     reel_bytes = _pl.Path(reel_local_path).read_bytes()
-                    reel_public_url = await self._asset_store.write(
+                    reel_drive_url = await self._asset_store.write(
                         video_id=video_id,
                         subfolder=SubFolder.VIDEOS,
                         filename="reel.mp4",
                         content=reel_bytes,
                     )
+
+                    # Convert Drive viewer URL to direct download URL
+                    # From: https://drive.google.com/file/d/{id}/view
+                    # To:   https://drive.google.com/uc?id={id}&export=download
+                    import re as _re  # noqa: PLC0415
+                    drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
+                    if drive_id_match:
+                        file_id = drive_id_match.group(1)
+                        reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                    else:
+                        reel_public_url = reel_drive_url
 
                     youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
                     thumbnail_url = visual.thumbnail_url or None
