@@ -67,7 +67,7 @@ jobs:
           PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}
           TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-          LLM_PROVIDER=gemini
+          LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}
           GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}
