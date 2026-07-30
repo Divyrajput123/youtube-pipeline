@@ -863,7 +863,7 @@ class Orchestrator:
         )
         await self._flush_log(run_id, video_id)
 
-        logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)        logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)
+        logger.info("Orchestrator.start_pipeline completed: run_id=%s", run_id)
         return run_id
 
     # ------------------------------------------------------------------
