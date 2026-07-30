@@ -389,6 +389,34 @@ class GoogleDriveMCPClient(DriveClient):
         loop = _asyncio.get_running_loop()
         return await loop.run_in_executor(None, _sync_upload)
 
+    async def get_web_content_link(self, file_id: str) -> str:
+        """Get the webContentLink for a file — a direct download URL that works without auth.
+
+        This URL serves the raw file bytes without redirects or confirmation pages,
+        suitable for passing to external APIs like Instagram Graph API.
+
+        Args:
+            file_id: Google Drive file ID.
+
+        Returns:
+            Direct download URL string.
+        """
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        def _sync_get() -> str:
+            resp = self._service.files().get(
+                fileId=file_id,
+                fields="webContentLink",
+            ).execute()
+            link = resp.get("webContentLink", "")
+            if not link:
+                # Fallback: construct the direct download URL
+                link = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+            return link
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_get)
+
     async def download_file(self, folder_path: str, filename: str) -> bytes:
         import asyncio as _asyncio  # noqa: PLC0415
         import io as _io  # noqa: PLC0415
