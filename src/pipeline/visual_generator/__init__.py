@@ -656,66 +656,98 @@ async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:
 async def _generate_character_descriptions(script_topic: str, script_body: str) -> dict:
     """Dynamically generate character visual descriptions from the script topic.
 
-    Calls the LLM once per video to create proper, gender-correct, visually
-    accurate character descriptions based on the actual characters in the script —
-    not a hardcoded list.
+    Calls the LLM once per video to identify ALL characters in the script and
+    create proper, gender-correct, visually accurate descriptions for each.
+    Supports 2-10 characters (e.g., team battles, power rankings, crossovers).
 
     Returns:
-        Dict with keys: hero1_name, hero1_desc, hero2_name, hero2_desc
+        Dict with keys:
+          - "characters": list of dicts, each with "name" and "desc"
+          - Legacy keys (hero1_name, hero1_desc, hero2_name, hero2_desc) for backwards compat
     """
     try:
         client = build_claude_client()
         prompt = (
             f"Video topic: {script_topic}\n"
-            f"Script excerpt: {script_body[:300]}\n\n"
-            "Identify the TWO main characters in this video topic. For each character, "
-            "write a detailed visual description that a video generator can use to "
-            "render them accurately. NEVER use copyrighted names — describe only by appearance.\n\n"
+            f"Script excerpt: {script_body[:500]}\n\n"
+            "Identify ALL characters mentioned or implied in this video topic and script. "
+            "There may be 2, 3, 4, or more characters. For EACH character, write a detailed "
+            "visual description that a video generator can use to render them accurately.\n\n"
+            "NEVER use copyrighted names — describe only by physical appearance.\n\n"
             "IMPORTANT: Include gender, body type, hair, costume/armor details, "
             "signature weapon or power visuals, and any distinctive features.\n\n"
-            "Format your response EXACTLY like this (4 lines only):\n"
-            "HERO1_NAME: [short label like 'amazonian warrior' or 'armored titan']\n"
-            "HERO1_DESC: [full visual description, 30-50 words]\n"
-            "HERO2_NAME: [short label]\n"
-            "HERO2_DESC: [full visual description, 30-50 words]\n\n"
+            "Format your response as numbered entries:\n"
+            "CHAR1_NAME: [short label like 'amazonian warrior' or 'armored titan']\n"
+            "CHAR1_DESC: [full visual description, 30-50 words]\n"
+            "CHAR2_NAME: [short label]\n"
+            "CHAR2_DESC: [full visual description, 30-50 words]\n"
+            "CHAR3_NAME: [short label] (if applicable)\n"
+            "CHAR3_DESC: [full visual description] (if applicable)\n"
+            "... continue for all characters\n\n"
             "Examples:\n"
-            "HERO1_NAME: amazonian warrior princess\n"
-            "HERO1_DESC: Tall athletic woman with long flowing black hair, golden tiara with red star, red and blue armored corset, silver bracelet gauntlets, golden lasso at hip, tanned skin, fierce determined expression\n"
-            "HERO2_NAME: armored purple titan\n"
-            "HERO2_DESC: Massive 8-foot tall purple-skinned muscular male titan, bald head with deep chin ridges, golden armored gauntlet on left hand with glowing gems, dark blue and gold battle armor\n\n"
-            "Output ONLY the 4 lines, nothing else."
+            "CHAR1_NAME: amazonian warrior princess\n"
+            "CHAR1_DESC: Tall athletic woman with long flowing black hair, golden tiara with red star, "
+            "red and blue armored corset, silver bracelet gauntlets, golden lasso at hip, fierce expression\n"
+            "CHAR2_NAME: thunder god\n"
+            "CHAR2_DESC: Muscular tall man with long blonde hair, silver winged helmet, red cape flowing, "
+            "silver chainmail armor, wielding a short-handled war hammer crackling with blue lightning\n"
+            "CHAR3_NAME: scarlet speedster\n"
+            "CHAR3_DESC: Lean athletic man in skin-tight crimson red suit with golden lightning bolt "
+            "emblem on chest, cowl with small golden lightning bolt ears, yellow boots, motion blur trails\n\n"
+            "Output ONLY the numbered character lines, nothing else. Minimum 2, maximum 10 characters."
         )
-        result = await client.complete(prompt, max_tokens=300)
+        result = await client.complete(prompt, max_tokens=600)
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
 
-        hero1_name = "hero 1"
-        hero1_desc = "a powerful superhero in dramatic pose"
-        hero2_name = "hero 2"
-        hero2_desc = "a powerful warrior in battle stance"
+        characters: list[dict[str, str]] = []
+        current_name = ""
+        current_desc = ""
 
         for line in lines:
-            if line.upper().startswith("HERO1_NAME:"):
-                hero1_name = line.split(":", 1)[1].strip()
-            elif line.upper().startswith("HERO1_DESC:"):
-                hero1_desc = line.split(":", 1)[1].strip()
-            elif line.upper().startswith("HERO2_NAME:"):
-                hero2_name = line.split(":", 1)[1].strip()
-            elif line.upper().startswith("HERO2_DESC:"):
-                hero2_desc = line.split(":", 1)[1].strip()
+            upper = line.upper()
+            # Match patterns like CHAR1_NAME:, CHAR2_NAME:, etc.
+            if "_NAME:" in upper:
+                if current_name and current_desc:
+                    characters.append({"name": current_name, "desc": current_desc})
+                current_name = line.split(":", 1)[1].strip()
+                current_desc = ""
+            elif "_DESC:" in upper:
+                current_desc = line.split(":", 1)[1].strip()
+
+        # Don't forget the last character
+        if current_name and current_desc:
+            characters.append({"name": current_name, "desc": current_desc})
+
+        # Fallback if parsing failed
+        if len(characters) < 2:
+            characters = [
+                {"name": "hero 1", "desc": "a powerful superhero in dramatic pose with distinctive costume"},
+                {"name": "hero 2", "desc": "a powerful warrior in battle stance with unique armor"},
+            ]
 
         logger.info(
-            "Character descriptions generated: Hero1='%s' Hero2='%s'",
-            hero1_name, hero2_name,
+            "Character descriptions generated: %d characters — %s",
+            len(characters),
+            ", ".join(c["name"] for c in characters),
         )
-        return {
-            "hero1_name": hero1_name,
-            "hero1_desc": hero1_desc,
-            "hero2_name": hero2_name,
-            "hero2_desc": hero2_desc,
-        }
+
+        # Build result dict with both new format and legacy keys for backwards compat
+        result_dict: dict = {"characters": characters}
+        # Legacy keys (for any code still using hero1/hero2 format)
+        result_dict["hero1_name"] = characters[0]["name"]
+        result_dict["hero1_desc"] = characters[0]["desc"]
+        result_dict["hero2_name"] = characters[1]["name"] if len(characters) > 1 else characters[0]["name"]
+        result_dict["hero2_desc"] = characters[1]["desc"] if len(characters) > 1 else characters[0]["desc"]
+
+        return result_dict
     except Exception as exc:
         logger.warning("Character description generation failed: %s — using generic fallback", exc)
+        fallback_chars = [
+            {"name": "hero 1", "desc": "a powerful superhero in dramatic pose with distinctive costume"},
+            {"name": "hero 2", "desc": "a powerful warrior in battle stance with unique armor"},
+        ]
         return {
+            "characters": fallback_chars,
             "hero1_name": "hero 1",
             "hero1_desc": "a powerful superhero in dramatic pose with distinctive costume",
             "hero2_name": "hero 2",
@@ -797,25 +829,48 @@ async def _generate_video_prompt_with_claude(
     # Use dynamic character descriptions if available, else generic fallback
     if character_descs is None:
         character_descs = {
+            "characters": [
+                {"name": "hero 1", "desc": "a powerful superhero in dramatic pose"},
+                {"name": "hero 2", "desc": "a powerful warrior in battle stance"},
+            ],
             "hero1_name": "hero 1",
             "hero1_desc": "a powerful superhero in dramatic pose",
             "hero2_name": "hero 2",
             "hero2_desc": "a powerful warrior in battle stance",
         }
 
-    h1_desc = character_descs["hero1_desc"]
-    h2_desc = character_descs["hero2_desc"]
-    h1_name = character_descs["hero1_name"]
-    h2_name = character_descs["hero2_name"]
+    characters = character_descs.get("characters", [])
+    if len(characters) < 2:
+        characters = [
+            {"name": character_descs.get("hero1_name", "hero 1"), "desc": character_descs.get("hero1_desc", "a powerful superhero")},
+            {"name": character_descs.get("hero2_name", "hero 2"), "desc": character_descs.get("hero2_desc", "a powerful warrior")},
+        ]
+
+    # Build character roster for the system prompt
+    char_roster_lines = []
+    for i, char in enumerate(characters, 1):
+        char_roster_lines.append(f"CHARACTER {i} ({char['name']}): {char['desc']}")
+    char_roster = "\n".join(char_roster_lines)
+
+    # For the focus logic, pick which characters are active in this clip
+    # Rotate through all characters, not just 2
+    num_chars = len(characters)
+    primary_idx = clip_num % num_chars
+    secondary_idx = (clip_num + 1) % num_chars
+
+    h1_name = characters[primary_idx]["name"]
+    h1_desc = characters[primary_idx]["desc"]
+    h2_name = characters[secondary_idx]["name"]
+    h2_desc = characters[secondary_idx]["desc"]
 
     system_prompt = f"""You are an expert AI video prompt engineer writing Hollywood storyboard prompts for a video generator.
 
 VIDEO TOPIC: {script_topic if script_topic else "superhero battle"}
 
-CHARACTER 1 ({h1_name}): {h1_desc}
-CHARACTER 2 ({h2_name}): {h2_desc}
+ALL CHARACTERS IN THIS VIDEO:
+{char_roster}
 
-IMPORTANT: Every prompt MUST open by describing the character's full appearance from the description above. Never use names, pronouns, or vague references like "the hero." Always include gender, costume details, and distinctive features so the video generator renders the correct character.
+IMPORTANT: Every prompt MUST describe the characters' full appearance from the descriptions above. Never use names, pronouns, or vague references like "the hero." Always include gender, costume details, and distinctive features so the video generator renders the correct characters.
 
 ENVIRONMENT: Futuristic city. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
 
@@ -823,25 +878,33 @@ MASTER STYLE (append to every prompt unchanged):
 {_MASTER_STYLE}
 
 RULES:
-1. ONE action per clip — one character doing one clear thing
-2. ALTERNATE between Character 1 and Character 2 every clip
+1. Read the script action — show EXACTLY the characters mentioned in it
+2. BOTH/ALL characters in the script action must be FULLY DESCRIBED by appearance in the prompt
 3. Vary actions — no two clips should show the same move
 4. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
 5. EMOTION WORDS — forbidden: "widen". Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
 6. Append master style tag at end
-7. Max 280 characters before style tag, present tense, no dialogue
-8. CRITICAL: output must contain ZERO character names, franchise names, or copyrighted IP — describe ONLY by physical appearance"""
+7. Max 350 characters before style tag, present tense, no dialogue
+8. CRITICAL: output must contain ZERO character names, franchise names, or copyrighted IP — describe ONLY by physical appearance
+9. Match the character descriptions from the roster above EXACTLY — use the costume details, body type, and features listed. The video generator only renders what you describe."""
 
-    # Alternate between Character 1 and Character 2
-    if clip_num % 6 == 2 or clip_num % 6 == 4:
-        clip_focus = "EQUAL CLASH — show both characters at the moment of impact"
-        focus_instruction = f"Open with Character 1's full description ({h1_desc[:50]}...), mention Character 2 in the action"
-    elif clip_num % 2 == 0:
-        clip_focus = f"CHARACTER 1 ({h1_name}) — show their offensive/defensive action"
-        focus_instruction = f"Open with: {h1_desc}"
-    else:
-        clip_focus = f"CHARACTER 2 ({h2_name}) — show their offensive/defensive action"
-        focus_instruction = f"Open with: {h2_desc}"
+    # Alternate focus across ALL characters, always showing at least 2 in frame
+    # Let Claude decide which characters are active based on the script chunk
+    # (handled in the user_prompt below — Claude picks from the full roster)
+    focus_instruction = (
+        "Based on the script action below, identify which characters from the roster "
+        "are involved in THIS specific moment and describe them in the prompt. "
+        "Always describe at least 2 characters with their FULL appearance."
+    )
+    clip_focus = "Script-driven — show the characters mentioned in the script action"
+
+    # If there are 3+ characters, remind Claude about extras
+    extra_chars_in_scene = ""
+    if num_chars > 2:
+        extra_chars_in_scene = (
+            f"\nThis video has {num_chars} characters total. Show ONLY the ones "
+            "relevant to the current script action. Others may appear in background if the scene calls for it."
+        )
 
     user_prompt = f"""VIDEO TOPIC: {script_topic if script_topic else "superhero battle"}
 Segment: "{title}"
@@ -850,23 +913,29 @@ Scene phase: {scene_phase}
 Damage: {damage_level}
 Emotion (ONE word, never "widen"): {emotion_guidance}
 Camera: {camera}
-Focus this clip: {clip_focus}
-Character description to use: {focus_instruction}
+{extra_chars_in_scene}
 Clip {clip_num + 1}/{total_clips} (global {total_position + 1}/{total_global})
 {"Transition: use clip " + str(min(clip_num, 5) + 2) + " phrase" if clip_num > 0 else "Opening clip — no transition"}
 
-Start by describing the character's FULL appearance, then the action.
+INSTRUCTIONS:
+1. Read the "Script action" above carefully — it tells you EXACTLY which characters are doing what.
+2. From the CHARACTER ROSTER in the system prompt, identify which characters match the ones in the script action.
+3. Describe those specific characters by their FULL APPEARANCE (costume, features, body type) — not by name.
+4. If the script mentions 2 characters interacting, BOTH must be fully described and visible in the prompt.
+5. If the script mentions only 1 character, show them as the focus with another character reacting in background.
+6. The video generator ONLY renders what you explicitly describe — unnamed or briefly-mentioned characters will NOT appear.
+
 Write ONE prompt. End with the master style tag."""
 
     try:
         client = build_claude_client()
         result = await client.complete(
             f"{system_prompt}\n\n{user_prompt}",
-            max_tokens=200,
+            max_tokens=350,
         )
         prompt = result.strip().strip('"\'')
         logger.info("Claude prompt clip %d/%d: %s", clip_num + 1, total_clips, prompt[:80])
-        return prompt[:400]
+        return prompt[:500]
 
     except Exception as exc:
         logger.warning("Claude prompt failed for '%s' clip %d: %s — fallback", title[:30], clip_num, exc)
