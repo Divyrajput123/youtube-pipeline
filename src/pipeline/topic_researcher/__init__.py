@@ -45,7 +45,9 @@ _SEARCH_QUERY = (
 _MAX_BATCH_SIZE = 50
 
 # Minimum number of topics that must be returned for a valid result.
-_MIN_VALID_COUNT = 5
+# For single-video runs (batch_size=1), we only need 1 topic.
+# For batch runs, we need at least batch_size topics.
+_MIN_VALID_COUNT = 1
 
 # Keyword tags used for the binary relevance signal — superhero content focus.
 _RELEVANCE_TAGS: list[str] = [
