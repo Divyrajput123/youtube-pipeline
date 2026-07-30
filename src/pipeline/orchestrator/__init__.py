@@ -452,12 +452,7 @@ class Orchestrator:
         if gate1_action == "reject":
             logger.info("Gate 1 rejected: restarting from topic research for video_id=%s", video_id)
 
-            # Mark the current Notion record as rejected — keeps the rejected topic
-            # in the calendar so get_batch_topics can exclude it in future runs.
-            await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
-
-            # Fetch fresh exclusion list — SCRIPT_REJECTED records are included
-            # because get_batch_topics only excludes PIPELINE_ERROR.
+            # Fetch fresh exclusion list before marking as rejected
             past_topics_reject: list[str] = []
             try:
                 past_topics_reject = await self._content_calendar.get_batch_topics(
@@ -465,6 +460,21 @@ class Orchestrator:
                 )
             except Exception:
                 pass
+
+            # Create a NEW Notion record first, so topic research updates the new one
+            new_video_id = f"video-{run_id[:8]}r"
+            try:
+                await self._content_calendar.create_record(video_id=new_video_id, batch_id=None)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not create new Notion record after reject: %s — reusing video_id", exc)
+                new_video_id = video_id
+
+            # NOW mark the original record as rejected (won't be overwritten)
+            if new_video_id != video_id:
+                await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
+
+            # Switch to the new video_id for the rest of this run
+            video_id = new_video_id
 
             new_topics: list[TopicEntry] = await self._run_stage(
                 stage_name="topic_researcher_regen",
@@ -479,22 +489,10 @@ class Orchestrator:
             )
             top_topic = new_topics[0]
 
-            # Create a NEW Notion record for the new topic/video so the rejected
-            # record is preserved with its rejected topic intact.
-            new_video_id = f"video-{run_id[:8]}r"
             try:
-                await self._content_calendar.create_record(video_id=new_video_id, batch_id=None)
-                await self._content_calendar.update_topic(new_video_id, top_topic.title)
+                await self._content_calendar.update_topic(video_id, top_topic.title)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not create new Notion record after reject: %s — reusing video_id", exc)
-                new_video_id = video_id
-                try:
-                    await self._content_calendar.update_topic(new_video_id, top_topic.title)
-                except Exception as exc2:  # noqa: BLE001
-                    logger.warning("Could not update topic in Notion after reject: %s", exc2)
-
-            # Switch to the new video_id for the rest of this run
-            video_id = new_video_id
+                logger.warning("Could not update topic in Notion after reject: %s", exc)
 
             script = await self._run_stage(
                 stage_name="script_writer_regen",
