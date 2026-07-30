@@ -759,8 +759,10 @@ class Orchestrator:
                 )
 
                 if reel_local_path:
-                    # 2. Upload the encoded file to Drive to get a public URL
-                    #    (Instagram Graph API requires a DIRECT download URL, not a viewer page)
+                    # 2. Upload the encoded file to Drive and generate a public URL
+                    #    Instagram Graph API needs a directly accessible video URL.
+                    #    We upload to Drive (public sharing), then use the webContentLink
+                    #    which provides a direct download without redirects/confirmation pages.
                     import pathlib as _pl  # noqa: PLC0415
                     reel_bytes = _pl.Path(reel_local_path).read_bytes()
                     reel_drive_url = await self._asset_store.write(
@@ -770,14 +772,21 @@ class Orchestrator:
                         content=reel_bytes,
                     )
 
-                    # Convert Drive viewer URL to direct download URL
-                    # From: https://drive.google.com/file/d/{id}/view
-                    # To:   https://drive.google.com/uc?id={id}&export=download
+                    # Extract file ID and build the direct content URL
                     import re as _re  # noqa: PLC0415
                     drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
                     if drive_id_match:
                         file_id = drive_id_match.group(1)
-                        reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                        # Get the webContentLink (direct download) via Drive API
+                        try:
+                            web_content_link = await self._asset_store._drive.get_web_content_link(file_id)
+                            reel_public_url = web_content_link
+                        except Exception:
+                            # Fallback to uc?export with confirm bypass
+                            reel_public_url = (
+                                f"https://drive.google.com/uc?id={file_id}"
+                                f"&export=download&confirm=t"
+                            )
                     else:
                         reel_public_url = reel_drive_url
 
