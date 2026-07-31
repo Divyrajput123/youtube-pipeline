@@ -758,19 +758,39 @@ class Orchestrator:
                 )
 
                 if reel_local_path:
-                    # 2. Serve the video file through the pipeline's ngrok tunnel
-                    #    Instagram Graph API needs a directly accessible video URL.
-                    #    Google Drive URLs don't work (redirects, virus scan pages).
-                    #    Instead, serve the file via our existing review webhook server.
-                    import uuid as _uuid  # noqa: PLC0415
-                    from pipeline.review_server import register_media_file, unregister_media_file
+                    # 2. Upload to Drive and build a direct-access URL
+                    #    Instagram needs a URL that serves raw video bytes without redirects.
+                    #    - Ngrok free tier adds an interstitial page (blocks Instagram)
+                    #    - Drive /uc?export=download has virus scan pages for large files
+                    #    - Drive API v3 alt=media with API key provides direct byte stream
+                    import pathlib as _pl  # noqa: PLC0415
+                    import re as _re  # noqa: PLC0415
+                    reel_bytes = _pl.Path(reel_local_path).read_bytes()
+                    reel_drive_url = await self._asset_store.write(
+                        video_id=video_id,
+                        subfolder=SubFolder.VIDEOS,
+                        filename="reel.mp4",
+                        content=reel_bytes,
+                    )
 
-                    reel_filename = f"reel_{_uuid.uuid4().hex[:8]}.mp4"
-                    register_media_file(reel_filename, reel_local_path)
+                    # Build Drive API v3 direct media URL (requires GOOGLE_CLOUD_API_KEY)
+                    drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
+                    gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
+                    if drive_id_match and gcloud_key:
+                        file_id = drive_id_match.group(1)
+                        # This URL directly streams the file bytes, no redirects
+                        reel_public_url = (
+                            f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                            f"?alt=media&key={gcloud_key}"
+                        )
+                    elif drive_id_match:
+                        # Fallback without API key
+                        file_id = drive_id_match.group(1)
+                        reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+                    else:
+                        reel_public_url = reel_drive_url
 
-                    public_base = os.environ.get("PIPELINE_PUBLIC_URL", "http://localhost:8742")
-                    reel_public_url = f"{public_base}/media/{reel_filename}"
-                    logger.info("Instagram Reel: serving at %s", reel_public_url)
+                    logger.info("Instagram Reel: using URL %s", reel_public_url[:80])
 
                     youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
                     thumbnail_url = visual.thumbnail_url or None
@@ -799,10 +819,8 @@ class Orchestrator:
                             "start_pipeline: Instagram Reel failed — %s", reel_result.error,
                         )
 
-                    # 4. Cleanup: unregister media file and remove temp directory
-                    unregister_media_file(reel_filename)
-                    import pathlib as _pl_cleanup  # noqa: PLC0415
-                    reel_dir = _pl_cleanup.Path(reel_local_path).parent
+                    # 4. Cleanup temp encoded file
+                    reel_dir = _pl.Path(reel_local_path).parent
                     import shutil as _shutil  # noqa: PLC0415
                     _shutil.rmtree(reel_dir, ignore_errors=True)
                 else:
