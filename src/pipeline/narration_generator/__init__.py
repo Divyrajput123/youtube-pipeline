@@ -309,45 +309,26 @@ class ElevenLabsMCPClient:
 
 
 class GoogleCloudTTSClient:
-    """Google Cloud Text-to-Speech client using the same Google OAuth credentials.
+    """Google Cloud Text-to-Speech client using a simple API key.
 
-    Uses WaveNet voices for high-quality output. Falls back to Standard voices
-    if WaveNet fails. The output is MP3 format matching ElevenLabs' interface.
+    Uses WaveNet voices for high-quality output. The API key approach avoids
+    OAuth scope issues (the YouTube/Drive refresh token doesn't have cloud-platform scope).
 
     Free tier: 1 million characters/month (WaveNet) or 4 million (Standard).
-    Uses the same GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN as YouTube/Drive.
+    Get an API key at: console.cloud.google.com/apis/credentials → Create Credentials → API Key
+    Set GOOGLE_CLOUD_API_KEY in .env.
     """
 
+    _TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+
     def __init__(self) -> None:
-        self._service = None
-        self._available = False
+        self._api_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
+        self._available = bool(self._api_key)
 
-        try:
-            from google.oauth2.credentials import Credentials  # type: ignore[import-untyped]
-            from googleapiclient.discovery import build  # type: ignore[import-untyped]
-            import google.auth.transport.requests as _gtr  # noqa: PLC0415
-
-            client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-            client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-            refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
-
-            if client_id and client_secret and refresh_token:
-                creds = Credentials(
-                    token=None,
-                    refresh_token=refresh_token,
-                    token_uri="https://oauth2.googleapis.com/token",
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
-                )
-                creds.refresh(_gtr.Request())
-                self._service = build("texttospeech", "v1", credentials=creds, cache_discovery=False)
-                self._available = True
-                logger.info("GoogleCloudTTSClient: initialized successfully")
-            else:
-                logger.debug("GoogleCloudTTSClient: Google credentials not available")
-        except Exception as exc:
-            logger.debug("GoogleCloudTTSClient: init failed (%s) — not available as fallback", exc)
+        if self._available:
+            logger.info("GoogleCloudTTSClient: initialized with API key")
+        else:
+            logger.debug("GoogleCloudTTSClient: GOOGLE_CLOUD_API_KEY not set — not available as fallback")
 
     @property
     def available(self) -> bool:
@@ -372,20 +353,21 @@ class GoogleCloudTTSClient:
             Raw MP3 bytes.
         """
         import base64 as _b64  # noqa: PLC0415
+        import httpx  # noqa: PLC0415
 
-        if not self._available or not self._service:
-            raise NarrationGeneratorError("Google Cloud TTS is not available")
+        if not self._available:
+            raise NarrationGeneratorError(
+                "Google Cloud TTS not available — set GOOGLE_CLOUD_API_KEY in .env"
+            )
 
         # Use a cinematic male WaveNet voice suitable for superhero narration
-        voice_name = "en-US-WaveNet-D"  # Deep male voice, good for narration
-        # Alternative voices: en-US-WaveNet-J (male), en-US-WaveNet-A (male)
+        voice_name = "en-US-Chirp3-HD-Achird"  # Deep male Chirp3-HD voice
 
         body = {
             "input": {"text": text},
             "voice": {
                 "languageCode": "en-US",
                 "name": voice_name,
-                "ssmlGender": "MALE",
             },
             "audioConfig": {
                 "audioEncoding": "MP3",
@@ -396,14 +378,15 @@ class GoogleCloudTTSClient:
             },
         }
 
-        def _sync_call() -> bytes:
-            response = self._service.text().synthesize(body=body).execute()
-            audio_content = response.get("audioContent", "")
-            return _b64.b64decode(audio_content)
+        url = f"{self._TTS_URL}?key={self._api_key}"
 
-        loop = asyncio.get_running_loop()
-        mp3_bytes = await loop.run_in_executor(None, _sync_call)
-        logger.info("GoogleCloudTTS: synthesized %d bytes", len(mp3_bytes))
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            audio_content = response.json().get("audioContent", "")
+            mp3_bytes = _b64.b64decode(audio_content)
+
+        logger.info("GoogleCloudTTS: synthesized %d bytes for %d chars", len(mp3_bytes), len(text))
         return mp3_bytes
 
 
