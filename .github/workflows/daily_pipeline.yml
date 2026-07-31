@@ -86,6 +86,7 @@ jobs:
           INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}
           FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}
           FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}
+          GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}
           EOF
           echo "✅ .env created"
 
