@@ -44,6 +44,14 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+# Configure logging to stdout so all pipeline logs appear in GitHub Actions / terminal
+import logging as _logging
+_logging.basicConfig(
+    level=_logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser."""
