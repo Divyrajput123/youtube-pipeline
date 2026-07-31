@@ -1295,6 +1295,20 @@ class Publisher:
             # Download full video
             video_bytes = await self._yt._fetch_bytes(mp4_url)
 
+            # Validate download (catch corrupted/partial downloads from SSL errors)
+            if len(video_bytes) < 100_000:  # Less than 100KB is definitely wrong
+                logger.warning(
+                    "Publisher.encode_for_instagram_reels: downloaded file too small (%d bytes) "
+                    "— likely corrupted download, skipping",
+                    len(video_bytes),
+                )
+                return None
+
+            logger.info(
+                "Publisher.encode_for_instagram_reels: downloaded source video (%.2f MB)",
+                len(video_bytes) / (1024 * 1024),
+            )
+
             # Use a persistent temp directory (caller cleans up)
             tmpdir = _tmp.mkdtemp(prefix="ig_reel_")
             full_path = _pl.Path(tmpdir) / "full.mp4"
@@ -1339,6 +1353,41 @@ class Publisher:
                 None,
                 lambda: _sp.run(ffmpeg_cmd, capture_output=True, timeout=180, check=True),
             )
+
+            # Validate the encoded file is a proper video (not corrupted)
+            probe_cmd = [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,duration,codec_name",
+                "-show_entries", "format=duration,size",
+                "-of", "json",
+                str(reel_path),
+            ]
+            probe_result = await loop.run_in_executor(
+                None,
+                lambda: _sp.run(probe_cmd, capture_output=True, timeout=30),
+            )
+            if probe_result.returncode == 0:
+                import json as _json  # noqa: PLC0415
+                probe_data = _json.loads(probe_result.stdout)
+                fmt_duration = float(probe_data.get("format", {}).get("duration", "0"))
+                fmt_size = int(probe_data.get("format", {}).get("size", "0"))
+                logger.info(
+                    "Publisher.encode_for_instagram_reels: validation — duration=%.1fs, size=%.2fMB",
+                    fmt_duration, fmt_size / (1024 * 1024),
+                )
+                # Instagram requires at least 3 seconds and valid duration
+                if fmt_duration < 3.0:
+                    logger.warning(
+                        "Publisher.encode_for_instagram_reels: video too short (%.1fs) — skipping",
+                        fmt_duration,
+                    )
+                    return None
+            else:
+                logger.warning(
+                    "Publisher.encode_for_instagram_reels: ffprobe validation failed — %s",
+                    probe_result.stderr.decode()[:200],
+                )
 
             logger.info(
                 "Publisher.encode_for_instagram_reels: encoded %s → %s",
