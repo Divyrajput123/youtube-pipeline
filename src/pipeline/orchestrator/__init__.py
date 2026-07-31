@@ -766,16 +766,29 @@ class Orchestrator:
                     import pathlib as _pl  # noqa: PLC0415
                     import re as _re  # noqa: PLC0415
                     reel_bytes = _pl.Path(reel_local_path).read_bytes()
+                    logger.info(
+                        "Instagram Reel: encoded file size = %.2f MB",
+                        len(reel_bytes) / (1024 * 1024),
+                    )
+
                     reel_drive_url = await self._asset_store.write(
                         video_id=video_id,
                         subfolder=SubFolder.VIDEOS,
                         filename="reel.mp4",
                         content=reel_bytes,
                     )
+                    logger.info("Instagram Reel: uploaded to Drive → %s", reel_drive_url)
 
                     # Build Drive API v3 direct media URL (requires GOOGLE_CLOUD_API_KEY)
                     drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
                     gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
+                    logger.info(
+                        "Instagram Reel: Drive file_id=%s, GOOGLE_CLOUD_API_KEY set=%s (len=%d)",
+                        drive_id_match.group(1) if drive_id_match else "NOT_FOUND",
+                        bool(gcloud_key),
+                        len(gcloud_key),
+                    )
+
                     if drive_id_match and gcloud_key:
                         file_id = drive_id_match.group(1)
                         # This URL directly streams the file bytes, no redirects
@@ -783,14 +796,20 @@ class Orchestrator:
                             f"https://www.googleapis.com/drive/v3/files/{file_id}"
                             f"?alt=media&key={gcloud_key}"
                         )
+                        logger.info("Instagram Reel: using Drive API v3 URL (direct media)")
                     elif drive_id_match:
                         # Fallback without API key
                         file_id = drive_id_match.group(1)
                         reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+                        logger.warning(
+                            "Instagram Reel: GOOGLE_CLOUD_API_KEY not set! "
+                            "Falling back to uc?export=download (may fail)"
+                        )
                     else:
                         reel_public_url = reel_drive_url
+                        logger.warning("Instagram Reel: could not extract file_id from Drive URL")
 
-                    logger.info("Instagram Reel: using URL %s", reel_public_url[:80])
+                    logger.info("Instagram Reel: final URL = %s", reel_public_url[:100])
 
                     youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
                     thumbnail_url = visual.thumbnail_url or None
