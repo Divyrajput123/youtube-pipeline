@@ -118,23 +118,12 @@ async def backfill_mode():
 
     print(f"\n   Total candidates: {len(all_videos)}")
 
-    # For each video, check if a reel.mp4 already exists (meaning Reel was already posted)
-    print("\n2. Checking which videos already have Reels...")
-    videos_needing_reels = []
-    for video in all_videos:
-        vid_id = video["video_id"]
-        try:
-            # If reel.mp4 exists in Drive, we already posted it
-            await asset_store.read(
-                video_id=vid_id,
-                subfolder=SubFolder.VIDEOS,
-                filename="reel.mp4",
-            )
-            print(f"   {vid_id}: ✓ already has Reel")
-        except Exception:
-            # No reel.mp4 → needs one
-            videos_needing_reels.append(video)
-            print(f"   {vid_id}: ✗ needs Reel")
+    # For each video, try to create a Reel
+    # Note: we don't check for existing reel.mp4 on Drive because previous
+    # failed attempts may have uploaded the file but Instagram rejected it.
+    # Duplicates on Instagram are fine — the user can delete test ones manually.
+    print("\n2. Processing videos...")
+    videos_needing_reels = all_videos
 
     if not videos_needing_reels:
         print("\n   All videos already have Reels!")
