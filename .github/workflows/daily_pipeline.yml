@@ -58,7 +58,7 @@ jobs:
 
       - name: Create .env from GitHub Secrets
         run: |
-          cat > .env << EOF
+          cat > .env <<EOF
           PIPELINE_MODE=production
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
           ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
@@ -88,7 +88,10 @@ jobs:
           FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}
           GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}
           EOF
+          sed -i 's/^[[:space:]]*//' .env
           echo "✅ .env created"
+          echo "Checking key vars..."
+          grep -c "GOOGLE_CLOUD_API_KEY" .env && echo "GOOGLE_CLOUD_API_KEY present"
 
       - name: Run pipeline (scheduled — one video)
         if: github.event_name == 'schedule'
