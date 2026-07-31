@@ -273,6 +273,7 @@ class ElevenLabsMCPClient:
             err_str = str(exc).lower()
             if "quota_exceeded" in err_str or "quota exceeded" in err_str or "exceeded" in err_str:
                 # Try Google Cloud TTS as fallback
+                gcloud_error = ""
                 try:
                     gcloud_tts = GoogleCloudTTSClient()
                     if gcloud_tts.available:
@@ -280,13 +281,16 @@ class ElevenLabsMCPClient:
                             "ElevenLabs quota exceeded — falling back to Google Cloud TTS"
                         )
                         return await gcloud_tts.synthesize(text, voice_id, sample_rate, bitrate_kbps)
+                    else:
+                        gcloud_error = "GOOGLE_CLOUD_API_KEY not set in .env"
                 except Exception as gcloud_exc:
+                    gcloud_error = str(gcloud_exc)
                     logger.warning("Google Cloud TTS fallback also failed: %s", gcloud_exc)
 
                 if is_production_mode():
                     raise Exception(
-                        f"ElevenLabs quota exceeded and Google Cloud TTS fallback failed: {exc}\n"
-                        "Top up ElevenLabs credits or check Google Cloud TTS setup."
+                        f"ElevenLabs quota exceeded. Google Cloud TTS fallback failed: {gcloud_error}\n"
+                        "Top up ElevenLabs credits or fix GOOGLE_CLOUD_API_KEY."
                     ) from exc
 
             if is_production_mode():
@@ -311,15 +315,18 @@ class ElevenLabsMCPClient:
 class GoogleCloudTTSClient:
     """Google Cloud Text-to-Speech client using a simple API key.
 
-    Uses WaveNet voices for high-quality output. The API key approach avoids
-    OAuth scope issues (the YouTube/Drive refresh token doesn't have cloud-platform scope).
+    Uses Chirp3-HD voices (latest generation) for high-quality narration.
+    Falls back to WaveNet if Chirp3-HD isn't available.
 
-    Free tier: 1 million characters/month (WaveNet) or 4 million (Standard).
+    Chirp3-HD requires the v1beta1 endpoint.
+    Free tier: 1 million characters/month (WaveNet) or limited Chirp3-HD chars.
     Get an API key at: console.cloud.google.com/apis/credentials → Create Credentials → API Key
     Set GOOGLE_CLOUD_API_KEY in .env.
     """
 
-    _TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+    # Chirp3-HD needs v1beta1; WaveNet works with v1
+    _TTS_URL_BETA = "https://texttospeech.googleapis.com/v1beta1/text:synthesize"
+    _TTS_URL_V1 = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
     def __init__(self) -> None:
         self._api_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
@@ -341,11 +348,13 @@ class GoogleCloudTTSClient:
         sample_rate: int,
         bitrate_kbps: int,
     ) -> bytes:
-        """Synthesize text using Google Cloud TTS WaveNet voices.
+        """Synthesize text using Google Cloud TTS Chirp3-HD voices.
+
+        Falls back to WaveNet-D if Chirp3-HD fails.
 
         Args:
             text: Text to synthesize.
-            voice_id: Ignored (uses Google's en-US-WaveNet-D for male narration).
+            voice_id: Ignored (uses Chirp3-HD Achird voice).
             sample_rate: Output sample rate.
             bitrate_kbps: Ignored (Google controls encoding quality).
 
@@ -360,33 +369,57 @@ class GoogleCloudTTSClient:
                 "Google Cloud TTS not available — set GOOGLE_CLOUD_API_KEY in .env"
             )
 
-        # Use a cinematic male WaveNet voice suitable for superhero narration
-        voice_name = "en-US-Chirp3-HD-Achird"  # Deep male Chirp3-HD voice
-
-        body = {
+        # Try Chirp3-HD (Achird - deep male voice) on v1beta1 first
+        body_chirp = {
             "input": {"text": text},
             "voice": {
                 "languageCode": "en-US",
-                "name": voice_name,
+                "name": "en-US-Chirp3-HD-Achird",
+            },
+            "audioConfig": {
+                "audioEncoding": "MP3",
+                "speakingRate": 1.05,
+            },
+        }
+
+        url_beta = f"{self._TTS_URL_BETA}?key={self._api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url_beta, json=body_chirp)
+                response.raise_for_status()
+                audio_content = response.json().get("audioContent", "")
+                mp3_bytes = _b64.b64decode(audio_content)
+                logger.info("GoogleCloudTTS (Chirp3-HD Achird): synthesized %d bytes", len(mp3_bytes))
+                return mp3_bytes
+        except Exception as chirp_exc:
+            logger.warning("Chirp3-HD failed (%s), falling back to WaveNet-D", chirp_exc)
+
+        # Fallback: WaveNet-D on v1 (always works)
+        body_wavenet = {
+            "input": {"text": text},
+            "voice": {
+                "languageCode": "en-US",
+                "name": "en-US-WaveNet-D",
+                "ssmlGender": "MALE",
             },
             "audioConfig": {
                 "audioEncoding": "MP3",
                 "sampleRateHertz": sample_rate,
-                "speakingRate": 1.05,  # Slightly faster for engaging narration
-                "pitch": -1.0,  # Slightly deeper
-                "volumeGainDb": 0.0,
+                "speakingRate": 1.05,
+                "pitch": -1.0,
             },
         }
 
-        url = f"{self._TTS_URL}?key={self._api_key}"
+        url_v1 = f"{self._TTS_URL_V1}?key={self._api_key}"
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=body)
+            response = await client.post(url_v1, json=body_wavenet)
             response.raise_for_status()
             audio_content = response.json().get("audioContent", "")
             mp3_bytes = _b64.b64decode(audio_content)
 
-        logger.info("GoogleCloudTTS: synthesized %d bytes for %d chars", len(mp3_bytes), len(text))
+        logger.info("GoogleCloudTTS (WaveNet-D fallback): synthesized %d bytes", len(mp3_bytes))
         return mp3_bytes
 
 
