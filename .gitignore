@@ -179,7 +179,6 @@ Thumbs.db
 [Ll]ib
 [Ll]ib64
 [Ll]ocal
-[Ss]cripts
 pyvenv.cfg
 .venv
 pip-selfcheck.json
@@ -199,3 +198,6 @@ secret.json
 .env
 data/output/*
 !data/output/.gitkeep
+
+# Windows virtualenv Scripts folder (not our project scripts/)
+Scripts/
