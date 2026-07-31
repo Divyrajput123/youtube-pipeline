@@ -811,6 +811,12 @@ class Orchestrator:
 
                     logger.info("Instagram Reel: final URL = %s", reel_public_url[:100])
 
+                    # Wait for Drive CDN propagation — freshly uploaded files need
+                    # time before they're available at the public API URL.
+                    # Without this delay, Instagram hits the URL before Drive serves it.
+                    logger.info("Instagram Reel: waiting 60s for Drive CDN propagation...")
+                    await asyncio.sleep(60)
+
                     youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
                     thumbnail_url = visual.thumbnail_url or None
 

@@ -1,12 +1,21 @@
-name: Test Instagram Reel Upload
+name: Instagram Reel Manager
 
 on:
-  workflow_dispatch:  # Manual trigger only
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode: test (single test upload) or backfill (post Reels for all scheduled videos)'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - backfill
 
 jobs:
-  test-instagram:
+  instagram-reels:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -40,149 +49,17 @@ jobs:
           INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}
           FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}
           FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}
+          NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}
+          NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}
+          LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
           EOF
           sed -i 's/^[[:space:]]*//' .env
           echo "✅ .env created"
-          echo "GOOGLE_CLOUD_API_KEY length: $(grep GOOGLE_CLOUD_API_KEY .env | cut -d= -f2 | wc -c)"
 
-      - name: Test Instagram Reel Upload
+      - name: Run Instagram Reel (${{ github.event.inputs.mode }})
         run: |
-          PYTHONPATH=src python -c "
-          import asyncio, os, re, subprocess, tempfile, logging
-          from pathlib import Path
-          from dotenv import load_dotenv
-          load_dotenv(Path('.env'), override=True)
-
-          logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-
-          async def test():
-              from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
-              from pipeline.models import SubFolder
-              from pipeline.instagram_reels import InstagramReelsClient
-
-              print('=' * 60)
-              print('TEST: Instagram Reel on GitHub Actions (using real video)')
-              print('=' * 60)
-
-              drive_client = GoogleDriveMCPClient()
-              asset_store = Asset_Store(drive_client=drive_client)
-
-              # 1. Fetch a real video from a previous pipeline run
-              print('\n1. Fetching real video from Drive...')
-              video_ids = [
-                  'video-d10bd04d', 'video-96bdb181r', 'video-94a43bder',
-                  'video-ae51253er', 'video-0e600383', 'video-8afb7a5d',
-              ]
-
-              video_bytes = None
-              used_id = None
-              for vid_id in video_ids:
-                  try:
-                      video_bytes = await asset_store.read(
-                          video_id=vid_id,
-                          subfolder=SubFolder.VIDEOS,
-                          filename=f'{vid_id}_v1.mp4',
-                      )
-                      if video_bytes and len(video_bytes) > 100_000:
-                          used_id = vid_id
-                          print(f'   Found {vid_id}: {len(video_bytes)/(1024*1024):.1f} MB')
-                          break
-                  except Exception as exc:
-                      print(f'   {vid_id}: not found ({exc})')
-                      continue
-
-              if not video_bytes:
-                  print('   ERROR: No real video found on Drive. Cannot test.')
-                  exit(1)
-
-              # 2. Encode for Instagram Reels (60s, 9:16, 2Mbps)
-              print('\n2. Encoding for Instagram Reels...')
-              tmpdir = tempfile.mkdtemp()
-              full_path = Path(tmpdir) / 'full.mp4'
-              reel_path = Path(tmpdir) / 'reel.mp4'
-              full_path.write_bytes(video_bytes)
-
-              subprocess.run([
-                  'ffmpeg', '-y',
-                  '-i', str(full_path),
-                  '-t', '60',
-                  '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30',
-                  '-c:v', 'libx264', '-profile:v', 'high', '-level:v', '4.0',
-                  '-b:v', '2M', '-maxrate', '2.5M', '-bufsize', '4M',
-                  '-preset', 'fast', '-pix_fmt', 'yuv420p',
-                  '-c:a', 'aac', '-b:a', '192k', '-ar', '44100', '-ac', '2',
-                  '-movflags', '+faststart',
-                  str(reel_path),
-              ], capture_output=True, timeout=180, check=True)
-
-              reel_size = reel_path.stat().st_size
-              print(f'   Encoded: {reel_size/(1024*1024):.2f} MB')
-
-              # Validate with ffprobe
-              probe = subprocess.run(
-                  ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                   '-of', 'csv=p=0', str(reel_path)],
-                  capture_output=True, timeout=10
-              )
-              duration = probe.stdout.decode().strip()
-              print(f'   Duration: {duration}s')
-
-              # 3. Upload encoded Reel to Drive
-              print('\n3. Uploading Reel to Drive...')
-              reel_bytes = reel_path.read_bytes()
-              drive_url = await asset_store.write(
-                  video_id='test-ig-workflow',
-                  subfolder=SubFolder.VIDEOS,
-                  filename='reel_test.mp4',
-                  content=reel_bytes,
-              )
-              print(f'   Drive URL: {drive_url}')
-
-              # 4. Build API URL
-              drive_id_match = re.search(r'/file/d/([^/]+)', drive_url)
-              gcloud_key = os.environ.get('GOOGLE_CLOUD_API_KEY', '')
-              print(f'   GOOGLE_CLOUD_API_KEY set: {bool(gcloud_key)} (len={len(gcloud_key)})')
-
-              if not drive_id_match or not gcloud_key:
-                  print('   ERROR: Missing file_id or API key')
-                  exit(1)
-
-              file_id = drive_id_match.group(1)
-              api_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={gcloud_key}'
-              print(f'   API URL: {api_url[:80]}...')
-
-              # 5. Verify URL is accessible from GitHub runner
-              print('\n4. Verifying URL accessibility from this runner...')
-              import httpx
-              async with httpx.AsyncClient(timeout=30.0) as client:
-                  resp = await client.head(api_url)
-                  print(f'   HEAD: {resp.status_code}, Content-Length: {resp.headers.get(\"content-length\", \"?\")}')
-                  if resp.status_code != 200:
-                      body = (await client.get(api_url)).text[:300]
-                      print(f'   ERROR body: {body}')
-                      exit(1)
-
-              # 6. Submit to Instagram
-              print('\n5. Submitting Reel to Instagram...')
-              ig_client = InstagramReelsClient(
-                  access_token=os.environ['INSTAGRAM_ACCESS_TOKEN'],
-                  instagram_account_id=os.environ['INSTAGRAM_ACCOUNT_ID'],
-              )
-
-              result = await ig_client.upload_reel(
-                  video_url=api_url,
-                  caption=f'GitHub Actions test — {used_id}\n\n#test #superhero #reels',
-                  share_to_feed=False,
-              )
-
-              if result.success:
-                  print(f'\n   ✅ REEL POSTED! ID: {result.reel_id}')
-                  print(f'   Permalink: {result.permalink}')
-              else:
-                  print(f'\n   ❌ FAILED: {result.error}')
-                  exit(1)
-
-          asyncio.run(test())
-          "
+          PYTHONPATH=src python scripts/instagram_reel_manager.py --mode ${{ github.event.inputs.mode }}
         env:
           PYTHONUNBUFFERED: 1
