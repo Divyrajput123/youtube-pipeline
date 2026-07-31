@@ -56,13 +56,13 @@ _POLL_INTERVAL_S: float = 60.0
 
 # Gate 1 — Script Review reminder thresholds.
 _GATE1_REMINDER_THRESHOLDS: tuple[timedelta, timedelta, timedelta] = (
-    timedelta(minutes=30),   # single reminder at 30 min before auto-approve at 1h
-    timedelta(minutes=45),
-    timedelta(minutes=55),
+    timedelta(minutes=3),
+    timedelta(minutes=6),
+    timedelta(minutes=9),
 )
 
 # Gate 2 — Final Review auto-approve timeout.
-_GATE2_AUTO_APPROVE_TIMEOUT: timedelta = timedelta(hours=1)
+_GATE2_AUTO_APPROVE_TIMEOUT: timedelta = timedelta(minutes=10)
 
 # Maximum number of reminders to send for Gate 1.
 _MAX_REMINDERS: int = 3

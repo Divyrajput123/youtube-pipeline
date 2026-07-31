@@ -449,8 +449,8 @@ class Orchestrator:
                 )
                 await self._flush_log(run_id, video_id)
 
-        # Handle reject: restart from topic research to get a completely new topic and script
-        if gate1_action == "reject":
+        # Handle reject: keep regenerating new topics + scripts until approved
+        while gate1_action == "reject":
             logger.info("Gate 1 rejected: restarting from topic research for video_id=%s", video_id)
 
             # Fetch fresh exclusion list before marking as rejected
@@ -462,7 +462,7 @@ class Orchestrator:
             except Exception:
                 pass
 
-            # Create a NEW Notion record first, so topic research updates the new one
+            # Create a NEW Notion record, so topic research updates the new one
             new_video_id = f"video-{run_id[:8]}r"
             try:
                 await self._content_calendar.create_record(video_id=new_video_id, batch_id=None)
@@ -470,11 +470,11 @@ class Orchestrator:
                 logger.warning("Could not create new Notion record after reject: %s — reusing video_id", exc)
                 new_video_id = video_id
 
-            # NOW mark the original record as rejected (won't be overwritten)
+            # Mark the original/previous record as rejected
             if new_video_id != video_id:
                 await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
 
-            # Switch to the new video_id for the rest of this run
+            # Switch to the new video_id
             video_id = new_video_id
 
             new_topics: list[TopicEntry] = await self._run_stage(
@@ -512,16 +512,17 @@ class Orchestrator:
                     await self._content_calendar.update_asset_link(video_id, "script", script.asset_url)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Could not update regenerated script_url in Notion: %s", exc)
-            # Re-open Gate 1 for the new script on the new topic
+
+            # Re-open Gate 1 for the new script
             await self._update_calendar_status(video_id, PipelineStatus.AWAITING_SCRIPT_REVIEW, run_id)
-            gate1c = self.create_review_gate(gate_type="script", video_id=video_id)
-            await gate1c.trigger(asset_links=[script.asset_url] if script.asset_url else [])
-            gate1_result = await gate1c.poll_until_action()
+            gate_regen = self.create_review_gate(gate_type="script", video_id=video_id)
+            await gate_regen.trigger(asset_links=[script.asset_url] if script.asset_url else [])
+            gate1_result = await gate_regen.poll_until_action()
             gate1_action = gate1_result.get("action")
             self._emit_log(
                 event_type="stage_transition",
                 stage_name="review_gate_1",
-                message=f"Review Gate 1 (new topic) closed: action={gate1_action}",
+                message=f"Review Gate 1 (regeneration) closed: action={gate1_action}",
                 video_id=video_id,
             )
             await self._flush_log(run_id, video_id)
@@ -749,109 +750,147 @@ class Orchestrator:
         # Upload Instagram Reel (separate encoding from Shorts, synced schedule)
         if self._instagram_reels_client and self._config.instagram_reels.enabled:
             try:
-                # 1. Encode video specifically for Instagram Reels
-                #    (1080x1920, 4Mbps, 30fps, AAC 192k — higher quality than Shorts)
-                mp4_source = visual.mp4_url or visual.mp4_path
-                reel_local_path = await self._publisher.encode_for_instagram_reels(
+                # 1. Encode video for Instagram Reels using asset_store.read()
+                #    (avoids the flaky _fetch_bytes path that has SSL issues)
+                import pathlib as _pl  # noqa: PLC0415
+                import subprocess as _sp  # noqa: PLC0415
+                import tempfile as _tmp  # noqa: PLC0415
+                import re as _re  # noqa: PLC0415
+
+                logger.info("Instagram Reel: downloading source video from Drive...")
+                source_bytes = await self._asset_store.read(
                     video_id=video_id,
-                    mp4_url=mp4_source,
+                    subfolder=SubFolder.VIDEOS,
+                    filename=f"{video_id}_v1.mp4",
                 )
 
-                if reel_local_path:
-                    # 2. Upload to Drive and build a direct-access URL
-                    #    Instagram needs a URL that serves raw video bytes without redirects.
-                    #    - Ngrok free tier adds an interstitial page (blocks Instagram)
-                    #    - Drive /uc?export=download has virus scan pages for large files
-                    #    - Drive API v3 alt=media with API key provides direct byte stream
-                    import pathlib as _pl  # noqa: PLC0415
-                    import re as _re  # noqa: PLC0415
-                    reel_bytes = _pl.Path(reel_local_path).read_bytes()
+                if not source_bytes or len(source_bytes) < 100_000:
+                    logger.warning(
+                        "Instagram Reel: source video too small (%d bytes) — skipping",
+                        len(source_bytes) if source_bytes else 0,
+                    )
+                    raise Exception("Source video too small or missing")
+
+                logger.info(
+                    "Instagram Reel: source video downloaded (%.2f MB)",
+                    len(source_bytes) / (1024 * 1024),
+                )
+
+                # Encode for Reels (60s, 1080x1920, 2Mbps)
+                tmpdir = _tmp.mkdtemp(prefix="ig_reel_")
+                full_path = _pl.Path(tmpdir) / "full.mp4"
+                reel_path = _pl.Path(tmpdir) / "reel.mp4"
+                full_path.write_bytes(source_bytes)
+
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", str(full_path),
+                    "-t", "60",
+                    "-vf", (
+                        "scale=1080:1920:force_original_aspect_ratio=increase,"
+                        "crop=1080:1920,"
+                        "setsar=1,"
+                        "fps=30"
+                    ),
+                    "-c:v", "libx264",
+                    "-profile:v", "high",
+                    "-level:v", "4.0",
+                    "-b:v", "2M",
+                    "-maxrate", "2.5M",
+                    "-bufsize", "4M",
+                    "-preset", "fast",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "44100",
+                    "-ac", "2",
+                    "-movflags", "+faststart",
+                    "-pix_fmt", "yuv420p",
+                    str(reel_path),
+                ]
+
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: _sp.run(ffmpeg_cmd, capture_output=True, timeout=180, check=True),
+                )
+
+                reel_bytes = reel_path.read_bytes()
+                logger.info(
+                    "Instagram Reel: encoded file size = %.2f MB",
+                    len(reel_bytes) / (1024 * 1024),
+                )
+
+                # 2. Upload to Drive
+                reel_drive_url = await self._asset_store.write(
+                    video_id=video_id,
+                    subfolder=SubFolder.VIDEOS,
+                    filename="reel.mp4",
+                    content=reel_bytes,
+                )
+                logger.info("Instagram Reel: uploaded to Drive → %s", reel_drive_url)
+
+                # Build Drive API v3 direct media URL
+                drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
+                gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
+                logger.info(
+                    "Instagram Reel: Drive file_id=%s, GOOGLE_CLOUD_API_KEY set=%s (len=%d)",
+                    drive_id_match.group(1) if drive_id_match else "NOT_FOUND",
+                    bool(gcloud_key),
+                    len(gcloud_key),
+                )
+
+                if drive_id_match and gcloud_key:
+                    file_id = drive_id_match.group(1)
+                    reel_public_url = (
+                        f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                        f"?alt=media&key={gcloud_key}"
+                    )
+                    logger.info("Instagram Reel: using Drive API v3 URL (direct media)")
+                elif drive_id_match:
+                    file_id = drive_id_match.group(1)
+                    reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+                    logger.warning("Instagram Reel: GOOGLE_CLOUD_API_KEY not set! Falling back")
+                else:
+                    reel_public_url = reel_drive_url
+                    logger.warning("Instagram Reel: could not extract file_id from Drive URL")
+
+                logger.info("Instagram Reel: final URL = %s", reel_public_url[:100])
+
+                # Wait for Drive CDN propagation
+                logger.info("Instagram Reel: waiting 60s for Drive CDN propagation...")
+                await asyncio.sleep(60)
+
+                youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
+                thumbnail_url = visual.thumbnail_url or None
+
+                # 3. Upload/schedule Reel at the same time as YouTube publish
+                reel_result = await upload_reel_from_short(
+                    client=self._instagram_reels_client,
+                    video_public_url=reel_public_url,
+                    metadata=metadata,
+                    youtube_url=youtube_full_url,
+                    thumbnail_url=thumbnail_url,
+                    extra_hashtags=self._config.instagram_reels.extra_hashtags,
+                    scheduled_publish_time=scheduled_publish_dt,
+                )
+
+                if reel_result.success:
+                    schedule_note = ""
+                    if scheduled_publish_dt:
+                        schedule_note = f" (scheduled for {scheduled_publish_dt.strftime('%Y-%m-%d %H:%M UTC')})"
                     logger.info(
-                        "Instagram Reel: encoded file size = %.2f MB",
-                        len(reel_bytes) / (1024 * 1024),
+                        "start_pipeline: Instagram Reel ready — %s (%s)%s",
+                        reel_result.reel_id, reel_result.permalink, schedule_note,
                     )
-
-                    reel_drive_url = await self._asset_store.write(
-                        video_id=video_id,
-                        subfolder=SubFolder.VIDEOS,
-                        filename="reel.mp4",
-                        content=reel_bytes,
-                    )
-                    logger.info("Instagram Reel: uploaded to Drive → %s", reel_drive_url)
-
-                    # Build Drive API v3 direct media URL (requires GOOGLE_CLOUD_API_KEY)
-                    drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
-                    gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
-                    logger.info(
-                        "Instagram Reel: Drive file_id=%s, GOOGLE_CLOUD_API_KEY set=%s (len=%d)",
-                        drive_id_match.group(1) if drive_id_match else "NOT_FOUND",
-                        bool(gcloud_key),
-                        len(gcloud_key),
-                    )
-
-                    if drive_id_match and gcloud_key:
-                        file_id = drive_id_match.group(1)
-                        # This URL directly streams the file bytes, no redirects
-                        reel_public_url = (
-                            f"https://www.googleapis.com/drive/v3/files/{file_id}"
-                            f"?alt=media&key={gcloud_key}"
-                        )
-                        logger.info("Instagram Reel: using Drive API v3 URL (direct media)")
-                    elif drive_id_match:
-                        # Fallback without API key
-                        file_id = drive_id_match.group(1)
-                        reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
-                        logger.warning(
-                            "Instagram Reel: GOOGLE_CLOUD_API_KEY not set! "
-                            "Falling back to uc?export=download (may fail)"
-                        )
-                    else:
-                        reel_public_url = reel_drive_url
-                        logger.warning("Instagram Reel: could not extract file_id from Drive URL")
-
-                    logger.info("Instagram Reel: final URL = %s", reel_public_url[:100])
-
-                    # Wait for Drive CDN propagation — freshly uploaded files need
-                    # time before they're available at the public API URL.
-                    # Without this delay, Instagram hits the URL before Drive serves it.
-                    logger.info("Instagram Reel: waiting 60s for Drive CDN propagation...")
-                    await asyncio.sleep(60)
-
-                    youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
-                    thumbnail_url = visual.thumbnail_url or None
-
-                    # 3. Upload/schedule Reel at the same time as YouTube publish
-                    reel_result = await upload_reel_from_short(
-                        client=self._instagram_reels_client,
-                        video_public_url=reel_public_url,
-                        metadata=metadata,
-                        youtube_url=youtube_full_url,
-                        thumbnail_url=thumbnail_url,
-                        extra_hashtags=self._config.instagram_reels.extra_hashtags,
-                        scheduled_publish_time=scheduled_publish_dt,
-                    )
-
-                    if reel_result.success:
-                        schedule_note = ""
-                        if scheduled_publish_dt:
-                            schedule_note = f" (scheduled for {scheduled_publish_dt.strftime('%Y-%m-%d %H:%M UTC')})"
-                        logger.info(
-                            "start_pipeline: Instagram Reel ready — %s (%s)%s",
-                            reel_result.reel_id, reel_result.permalink, schedule_note,
-                        )
-                    else:
-                        logger.warning(
-                            "start_pipeline: Instagram Reel failed — %s", reel_result.error,
-                        )
-
-                    # 4. Cleanup temp encoded file
-                    reel_dir = _pl.Path(reel_local_path).parent
-                    import shutil as _shutil  # noqa: PLC0415
-                    _shutil.rmtree(reel_dir, ignore_errors=True)
                 else:
                     logger.warning(
-                        "start_pipeline: Instagram Reels encoding failed — skipping Reel upload"
+                        "start_pipeline: Instagram Reel failed — %s", reel_result.error,
                     )
+
+                # 4. Cleanup temp files
+                import shutil as _shutil  # noqa: PLC0415
+                _shutil.rmtree(tmpdir, ignore_errors=True)
+
             except Exception as exc:
                 logger.warning("start_pipeline: Instagram Reels upload failed (non-fatal): %s", exc)
 
