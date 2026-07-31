@@ -269,20 +269,30 @@ class ElevenLabsMCPClient:
             return await loop.run_in_executor(None, _sync_call)
             
         except Exception as exc:
-            # In production mode, fail fast instead of falling back
+            # In production mode, try Google Cloud TTS fallback before failing
+            err_str = str(exc).lower()
+            if "quota_exceeded" in err_str or "quota exceeded" in err_str or "exceeded" in err_str:
+                # Try Google Cloud TTS as fallback
+                try:
+                    gcloud_tts = GoogleCloudTTSClient()
+                    if gcloud_tts.available:
+                        logger.warning(
+                            "ElevenLabs quota exceeded — falling back to Google Cloud TTS"
+                        )
+                        return await gcloud_tts.synthesize(text, voice_id, sample_rate, bitrate_kbps)
+                except Exception as gcloud_exc:
+                    logger.warning("Google Cloud TTS fallback also failed: %s", gcloud_exc)
+
+                if is_production_mode():
+                    raise Exception(
+                        f"ElevenLabs quota exceeded and Google Cloud TTS fallback failed: {exc}\n"
+                        "Top up ElevenLabs credits or check Google Cloud TTS setup."
+                    ) from exc
+
             if is_production_mode():
                 raise Exception(
                     f"ElevenLabs API error in production mode: {exc}. "
                     "Set PIPELINE_MODE=development to use fallback mode."
-                ) from exc
-
-            # In development mode, only fall back for non-quota errors.
-            # Quota errors mean real content can't be generated — fail clearly.
-            err_str = str(exc).lower()
-            if "quota_exceeded" in err_str or "quota exceeded" in err_str:
-                raise Exception(
-                    f"ElevenLabs quota exceeded: {exc}\n"
-                    "Top up your ElevenLabs credits at https://elevenlabs.io to continue."
                 ) from exc
 
             word_count = len(text.split())
@@ -291,6 +301,110 @@ class ElevenLabsMCPClient:
                 "ElevenLabs API error (%s), falling back to %.1fs silent MP3.", exc, estimated_seconds
             )
             return _generate_placeholder_mp3(sample_rate, duration_seconds=estimated_seconds)
+
+
+# ---------------------------------------------------------------------------
+# Google Cloud TTS Client — fallback when ElevenLabs credits are exhausted
+# ---------------------------------------------------------------------------
+
+
+class GoogleCloudTTSClient:
+    """Google Cloud Text-to-Speech client using the same Google OAuth credentials.
+
+    Uses WaveNet voices for high-quality output. Falls back to Standard voices
+    if WaveNet fails. The output is MP3 format matching ElevenLabs' interface.
+
+    Free tier: 1 million characters/month (WaveNet) or 4 million (Standard).
+    Uses the same GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN as YouTube/Drive.
+    """
+
+    def __init__(self) -> None:
+        self._service = None
+        self._available = False
+
+        try:
+            from google.oauth2.credentials import Credentials  # type: ignore[import-untyped]
+            from googleapiclient.discovery import build  # type: ignore[import-untyped]
+            import google.auth.transport.requests as _gtr  # noqa: PLC0415
+
+            client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+            client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+            refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
+
+            if client_id and client_secret and refresh_token:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=refresh_token,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+                creds.refresh(_gtr.Request())
+                self._service = build("texttospeech", "v1", credentials=creds, cache_discovery=False)
+                self._available = True
+                logger.info("GoogleCloudTTSClient: initialized successfully")
+            else:
+                logger.debug("GoogleCloudTTSClient: Google credentials not available")
+        except Exception as exc:
+            logger.debug("GoogleCloudTTSClient: init failed (%s) — not available as fallback", exc)
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    async def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        sample_rate: int,
+        bitrate_kbps: int,
+    ) -> bytes:
+        """Synthesize text using Google Cloud TTS WaveNet voices.
+
+        Args:
+            text: Text to synthesize.
+            voice_id: Ignored (uses Google's en-US-WaveNet-D for male narration).
+            sample_rate: Output sample rate.
+            bitrate_kbps: Ignored (Google controls encoding quality).
+
+        Returns:
+            Raw MP3 bytes.
+        """
+        import base64 as _b64  # noqa: PLC0415
+
+        if not self._available or not self._service:
+            raise NarrationGeneratorError("Google Cloud TTS is not available")
+
+        # Use a cinematic male WaveNet voice suitable for superhero narration
+        voice_name = "en-US-WaveNet-D"  # Deep male voice, good for narration
+        # Alternative voices: en-US-WaveNet-J (male), en-US-WaveNet-A (male)
+
+        body = {
+            "input": {"text": text},
+            "voice": {
+                "languageCode": "en-US",
+                "name": voice_name,
+                "ssmlGender": "MALE",
+            },
+            "audioConfig": {
+                "audioEncoding": "MP3",
+                "sampleRateHertz": sample_rate,
+                "speakingRate": 1.05,  # Slightly faster for engaging narration
+                "pitch": -1.0,  # Slightly deeper
+                "volumeGainDb": 0.0,
+            },
+        }
+
+        def _sync_call() -> bytes:
+            response = self._service.text().synthesize(body=body).execute()
+            audio_content = response.get("audioContent", "")
+            return _b64.b64decode(audio_content)
+
+        loop = asyncio.get_running_loop()
+        mp3_bytes = await loop.run_in_executor(None, _sync_call)
+        logger.info("GoogleCloudTTS: synthesized %d bytes", len(mp3_bytes))
+        return mp3_bytes
 
 
 # ---------------------------------------------------------------------------
