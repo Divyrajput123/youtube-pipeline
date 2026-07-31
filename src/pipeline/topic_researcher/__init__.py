@@ -858,35 +858,101 @@ class Topic_Researcher:
         entries: list[TopicEntry],
         excluded_lower: set[str],
     ) -> list[TopicEntry]:
-        """Remove entries whose titles appear in *excluded_lower* (case-insensitive).
+        """Remove entries whose titles appear in *excluded_lower* or are semantically similar.
+
+        Uses both exact matching and keyword-overlap detection to catch:
+        - Exact duplicates: "Goku vs Superman" matches "goku vs superman"
+        - Semantic duplicates: "Superman vs Goku Battle" matches existing "Goku vs Superman: Who Wins"
+          (same character pair in a vs/battle/fight context)
 
         Also removes intra-list duplicates, keeping the first occurrence (highest score).
-
-        Args:
-            entries: Scored and sorted topic entries.
-            excluded_lower: Set of lowercase title strings to filter out.
-
-        Returns:
-            Filtered list preserving the original sort order.
         """
+        import re as _re  # noqa: PLC0415
+
+        def _extract_matchup_key(title: str) -> str | None:
+            """Extract a normalized 'A vs B' key from a title if it contains a battle/comparison."""
+            lower = title.lower()
+            # Look for "X vs Y", "X versus Y", "X against Y", "X or Y"
+            patterns = [
+                r"(\w[\w\s]*?)\s+(?:vs\.?|versus|against|or)\s+(\w[\w\s]*?)(?:\s*[:\-–—]|\s*$)",
+            ]
+            for pat in patterns:
+                m = _re.search(pat, lower)
+                if m:
+                    char_a = m.group(1).strip()
+                    char_b = m.group(2).strip()
+                    # Sort alphabetically so "goku vs superman" == "superman vs goku"
+                    pair = tuple(sorted([char_a, char_b]))
+                    return f"{pair[0]}|{pair[1]}"
+            return None
+
+        def _extract_keywords(title: str) -> set[str]:
+            """Extract significant words (3+ chars) from a title."""
+            stop_words = {"the", "who", "would", "win", "could", "beat", "vs", "versus",
+                         "top", "most", "best", "worst", "how", "why", "what", "can",
+                         "are", "has", "from", "with", "than", "that", "this", "and"}
+            words = _re.findall(r"[a-z]+", title.lower())
+            return {w for w in words if len(w) >= 3 and w not in stop_words}
+
+        # Build matchup keys and keyword sets from excluded titles
+        excluded_matchups: set[str] = set()
+        excluded_keyword_sets: list[set[str]] = []
+        for t in excluded_lower:
+            mk = _extract_matchup_key(t)
+            if mk:
+                excluded_matchups.add(mk)
+            kws = _extract_keywords(t)
+            if len(kws) >= 2:
+                excluded_keyword_sets.append(kws)
+
         seen: set[str] = set()
+        seen_matchups: set[str] = set()
         result: list[TopicEntry] = []
+
         for entry in entries:
             key = entry.title.lower()
+
+            # 1. Exact match
             if key in excluded_lower:
+                logger.debug("Topic_Researcher: skipping exact duplicate %r", entry.title)
+                continue
+
+            # 2. Matchup match (A vs B == B vs A)
+            matchup_key = _extract_matchup_key(key)
+            if matchup_key and (matchup_key in excluded_matchups or matchup_key in seen_matchups):
                 logger.debug(
-                    "Topic_Researcher: skipping duplicate title %r (matches excluded list).",
+                    "Topic_Researcher: skipping similar matchup %r (same character pair)",
                     entry.title,
                 )
                 continue
+
+            # 3. High keyword overlap (>= 60% shared significant words with any excluded)
+            entry_keywords = _extract_keywords(key)
+            if entry_keywords and len(entry_keywords) >= 2:
+                is_too_similar = False
+                for exc_kws in excluded_keyword_sets:
+                    overlap = len(entry_keywords & exc_kws)
+                    similarity = overlap / min(len(entry_keywords), len(exc_kws))
+                    if similarity >= 0.6:
+                        logger.debug(
+                            "Topic_Researcher: skipping %r — %.0f%% keyword overlap with excluded topic",
+                            entry.title, similarity * 100,
+                        )
+                        is_too_similar = True
+                        break
+                if is_too_similar:
+                    continue
+
+            # 4. Intra-list duplicate
             if key in seen:
-                logger.debug(
-                    "Topic_Researcher: skipping intra-batch duplicate title %r.",
-                    entry.title,
-                )
+                logger.debug("Topic_Researcher: skipping intra-batch duplicate %r", entry.title)
                 continue
+
             seen.add(key)
+            if matchup_key:
+                seen_matchups.add(matchup_key)
             result.append(entry)
+
         return result
 
     async def _store_results(
