@@ -339,6 +339,21 @@ CHANNEL STYLE:
 
 VIDEO TOPIC: {topic.title}
 
+STORYTELLING STYLE (CRITICAL):
+You are a cinematic narrator telling an EPIC STORY — not listing facts.
+- Open with a dramatic scene-setting moment ("Picture this..." / "The year is..." / "In a universe where...")
+- Build TENSION throughout — every segment should escalate stakes
+- Use vivid imagery: describe what the viewer should SEE in their mind
+- Write like a movie trailer narrator, not a Wikipedia article
+- Create emotional beats: awe, suspense, surprise, triumph
+- Use short punchy sentences for impact. Then follow with a longer one for rhythm.
+- Include dramatic pauses and revelations ("But here's what nobody talks about...")
+- End segments with cliffhangers that pull into the next section
+- Make the viewer FEEL the power, the speed, the destruction
+
+BAD (boring factual): "Superman has super strength and can fly at high speeds."
+GOOD (cinematic storytelling): "Imagine a being so powerful that when he clenches his fist... entire mountains crumble to dust. When he takes flight, sonic booms tear through the sky like thunder from an angry god."
+
 REQUIRED SCRIPT STRUCTURE:
 Write a complete YouTube video script with the following sections in order:
 
