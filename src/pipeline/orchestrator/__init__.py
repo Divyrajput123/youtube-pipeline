@@ -856,9 +856,33 @@ class Orchestrator:
 
                 logger.info("Instagram Reel: final URL = %s", reel_public_url[:100])
 
-                # Wait for Drive CDN propagation
-                logger.info("Instagram Reel: waiting 60s for Drive CDN propagation...")
-                await asyncio.sleep(60)
+                # Verify the URL is actually accessible before submitting to Instagram.
+                # Poll every 15s for up to 10 minutes until Drive serves the file.
+                import httpx as _httpx  # noqa: PLC0415
+                url_ready = False
+                for verify_attempt in range(40):  # 40 * 15s = 10 minutes max
+                    try:
+                        async with _httpx.AsyncClient(timeout=15.0) as verify_client:
+                            verify_resp = await verify_client.head(reel_public_url)
+                            content_length = int(verify_resp.headers.get("content-length", "0"))
+                            if verify_resp.status_code == 200 and content_length > 100_000:
+                                logger.info(
+                                    "Instagram Reel: URL verified accessible (HTTP %d, %d bytes) after %ds",
+                                    verify_resp.status_code, content_length, (verify_attempt + 1) * 15,
+                                )
+                                url_ready = True
+                                break
+                            else:
+                                logger.info(
+                                    "Instagram Reel: URL not ready yet (HTTP %d, %d bytes) — waiting 15s...",
+                                    verify_resp.status_code, content_length,
+                                )
+                    except Exception as verify_exc:
+                        logger.info("Instagram Reel: URL check failed (%s) — waiting 15s...", verify_exc)
+                    await asyncio.sleep(15)
+
+                if not url_ready:
+                    logger.warning("Instagram Reel: URL never became accessible after 10 min — posting anyway")
 
                 youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
                 thumbnail_url = visual.thumbnail_url or None

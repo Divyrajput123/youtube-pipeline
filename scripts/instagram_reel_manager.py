@@ -1,12 +1,12 @@
-"""Instagram Reel Manager — test uploads and backfill Reels for scheduled videos.
+"""Instagram Reel Manager — test or publish a Reel for a specific video.
 
 Modes:
-  test     — Upload a single test Reel from an existing pipeline video
-  backfill — Find all scheduled/published videos without Reels, encode and post them
+  test    — Upload a single test Reel from any existing pipeline video
+  publish — Create and publish a Reel for a specific video ID
 
 Usage:
   python scripts/instagram_reel_manager.py --mode test
-  python scripts/instagram_reel_manager.py --mode backfill
+  python scripts/instagram_reel_manager.py --mode publish --video-id video-d10bd04d
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,7 +35,6 @@ async def test_mode():
     """Upload a single test Reel from an existing pipeline video."""
     from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
     from pipeline.models import SubFolder
-    from pipeline.instagram_reels import InstagramReelsClient
 
     print("=" * 60)
     print("  MODE: TEST — Single Reel upload")
@@ -72,140 +70,50 @@ async def test_mode():
         print("   ERROR: No real video found on Drive")
         return False
 
-    # Encode, upload, and post
-    return await _encode_and_post_reel(asset_store, video_bytes, used_id, None)
+    return await _encode_and_post_reel(asset_store, video_bytes, used_id)
 
 
-async def backfill_mode():
-    """Find all scheduled/published videos and post Reels for ones that don't have them."""
+async def publish_mode(video_id: str):
+    """Create and publish a Reel for a specific video ID."""
     from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
-    from pipeline.content_calendar import Content_Calendar, NotionMCPClient
-    from pipeline.models import SubFolder, PipelineStatus
-    from pipeline.instagram_reels import InstagramReelsClient, build_reel_caption
-    from pipeline.models import MetadataPackage
+    from pipeline.models import SubFolder
 
     print("=" * 60)
-    print("  MODE: BACKFILL — Post Reels for all scheduled videos")
+    print(f"  MODE: PUBLISH — Reel for {video_id}")
     print("=" * 60)
 
-    # Set up clients
+    if not video_id:
+        print("   ERROR: --video-id is required for publish mode")
+        return False
+
     drive_client = GoogleDriveMCPClient()
     asset_store = Asset_Store(drive_client=drive_client)
 
-    notion_token = os.environ.get("NOTION_AUTH_TOKEN", "")
-    notion_db_id = os.environ.get("NOTION_DATABASE_ID", "")
-    notion_client = NotionMCPClient(auth_token=notion_token, database_id=notion_db_id)
-    content_calendar = Content_Calendar(notion_client=notion_client, database_id=notion_db_id)
-
-    # Query Notion for scheduled and published videos
-    print("\n1. Querying Notion for scheduled/published videos...")
-    statuses_to_check = [PipelineStatus.SCHEDULED, PipelineStatus.PUBLISHED, PipelineStatus.UNLISTED]
-
-    all_videos = []
-    for status in statuses_to_check:
-        try:
-            videos = await content_calendar.list_videos_by_status(status)
-            for v in videos:
-                v["status"] = status.value
-            all_videos.extend(videos)
-            print(f"   {status.value}: {len(videos)} video(s)")
-        except Exception as exc:
-            print(f"   {status.value}: query failed ({exc})")
-
-    if not all_videos:
-        print("\n   No scheduled/published videos found.")
-        return True
-
-    print(f"\n   Total candidates: {len(all_videos)}")
-
-    # For each video, try to create a Reel
-    # Note: we don't check for existing reel.mp4 on Drive because previous
-    # failed attempts may have uploaded the file but Instagram rejected it.
-    # Duplicates on Instagram are fine — the user can delete test ones manually.
-    print("\n2. Processing videos...")
-    videos_needing_reels = all_videos
-
-    if not videos_needing_reels:
-        print("\n   All videos already have Reels!")
-        return True
-
-    print(f"\n3. Creating Reels for {len(videos_needing_reels)} video(s)...")
-
-    success_count = 0
-    fail_count = 0
-
-    for video in videos_needing_reels:
-        vid_id = video["video_id"]
-        print(f"\n   --- Processing {vid_id} ({video.get('status', '?')}) ---")
-
-        # Fetch the full video from Drive
-        try:
-            video_bytes = await asset_store.read(
-                video_id=vid_id,
-                subfolder=SubFolder.VIDEOS,
-                filename=f"{vid_id}_v1.mp4",
-            )
-            if not video_bytes or len(video_bytes) < 100_000:
-                print(f"   Skipping {vid_id}: video file too small or missing")
-                fail_count += 1
-                continue
-            print(f"   Downloaded: {len(video_bytes)/(1024*1024):.1f} MB")
-        except Exception as exc:
-            print(f"   Skipping {vid_id}: could not fetch video ({exc})")
-            fail_count += 1
-            continue
-
-        # Try to get the scheduled publish time from Notion
-        scheduled_time = None
-        try:
-            # Query the specific video record for its scheduled datetime
-            notion_filter = {"property": "video_id", "rich_text": {"equals": vid_id}}
-            pages = await notion_client.query_database(notion_db_id, filter=notion_filter)
-            if pages:
-                props = pages[0].get("properties", {})
-                sched_prop = props.get("scheduled_publish_datetime", {})
-                date_val = sched_prop.get("date", {})
-                if date_val and date_val.get("start"):
-                    dt = datetime.fromisoformat(
-                        date_val["start"].replace("Z", "+00:00")
-                    )
-                    # Only use scheduled time if it's in the future (>10 min from now)
-                    # Instagram requires 10 min to 75 days in the future
-                    from datetime import timedelta
-                    now = datetime.now(timezone.utc)
-                    if dt > now + timedelta(minutes=10):
-                        scheduled_time = dt
-                        print(f"   Scheduled for: {scheduled_time.strftime('%Y-%m-%d %H:%M UTC')}")
-                    else:
-                        print(f"   Schedule date is in the past ({dt.strftime('%Y-%m-%d')}) — posting immediately")
-        except Exception as exc:
-            logger.debug("Could not get schedule for %s: %s", vid_id, exc)
-
-        # Encode and post
-        result = await _encode_and_post_reel(
-            asset_store, video_bytes, vid_id, scheduled_time
+    # Download the video
+    print(f"\n1. Downloading {video_id} from Drive...")
+    try:
+        video_bytes = await asset_store.read(
+            video_id=video_id,
+            subfolder=SubFolder.VIDEOS,
+            filename=f"{video_id}_v1.mp4",
         )
-        if result:
-            success_count += 1
-        else:
-            fail_count += 1
+        if not video_bytes or len(video_bytes) < 100_000:
+            print(f"   ERROR: Video file too small or missing ({len(video_bytes) if video_bytes else 0} bytes)")
+            return False
+        print(f"   Downloaded: {len(video_bytes)/(1024*1024):.1f} MB")
+    except Exception as exc:
+        print(f"   ERROR: Could not fetch video — {exc}")
+        return False
 
-        # Small delay between posts to avoid rate limiting
-        await asyncio.sleep(5)
-
-    print(f"\n{'=' * 60}")
-    print(f"  BACKFILL COMPLETE: {success_count} posted, {fail_count} failed")
-    print(f"{'=' * 60}")
-    return fail_count == 0
+    return await _encode_and_post_reel(asset_store, video_bytes, video_id)
 
 
 async def _encode_and_post_reel(
     asset_store,
     video_bytes: bytes,
     video_id: str,
-    scheduled_time: datetime | None,
 ) -> bool:
-    """Encode a video as Reel, upload to Drive, and post to Instagram."""
+    """Encode a video as Reel, upload to Drive, and publish to Instagram immediately."""
     from pipeline.models import SubFolder, MetadataPackage
     from pipeline.instagram_reels import InstagramReelsClient, build_reel_caption
     import json as _json
@@ -229,7 +137,7 @@ async def _encode_and_post_reel(
         print(f"   Metadata not found — will use fallback caption")
 
     # Encode for Instagram Reels
-    print(f"   Encoding for Instagram Reels...")
+    print(f"\n2. Encoding for Instagram Reels...")
     tmpdir = tempfile.mkdtemp()
     full_path = Path(tmpdir) / "full.mp4"
     reel_path = Path(tmpdir) / "reel.mp4"
@@ -258,13 +166,13 @@ async def _encode_and_post_reel(
     print(f"   Encoded: {reel_size/(1024*1024):.2f} MB")
 
     if reel_size < 50_000:
-        print(f"   ERROR: Encoded file too small ({reel_size} bytes) — likely bad source")
+        print(f"   ERROR: Encoded file too small ({reel_size} bytes)")
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
         return False
 
     # Upload to Drive
-    print(f"   Uploading to Drive...")
+    print(f"\n3. Uploading Reel to Drive...")
     reel_bytes = reel_path.read_bytes()
     drive_url = await asset_store.write(
         video_id=video_id,
@@ -278,36 +186,45 @@ async def _encode_and_post_reel(
     gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
     if not drive_id_match or not gcloud_key:
         print(f"   ERROR: Cannot build API URL (file_id={bool(drive_id_match)}, key={bool(gcloud_key)})")
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return False
 
     file_id = drive_id_match.group(1)
     api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={gcloud_key}"
 
     # Wait for Drive CDN propagation
-    print(f"   Waiting 60s for Drive CDN propagation...")
-    await asyncio.sleep(60)
-
-    # Verify accessibility
+    print(f"\n4. Waiting for Drive CDN propagation...")
     import httpx
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.head(api_url)
-        if resp.status_code != 200:
-            print(f"   ERROR: URL not accessible (HTTP {resp.status_code})")
-            return False
+    url_ready = False
+    for attempt in range(40):  # 40 * 15s = 10 min max
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.head(api_url)
+                content_length = int(resp.headers.get("content-length", "0"))
+                if resp.status_code == 200 and content_length > 100_000:
+                    print(f"   URL ready (HTTP {resp.status_code}, {content_length} bytes) after {(attempt+1)*15}s")
+                    url_ready = True
+                    break
+                else:
+                    print(f"   Not ready yet (HTTP {resp.status_code}, {content_length} bytes) — waiting...")
+        except Exception as exc:
+            print(f"   Check failed ({exc}) — waiting...")
+        await asyncio.sleep(15)
+
+    if not url_ready:
+        print(f"   WARNING: URL not confirmed accessible after 10 min — trying anyway")
 
     # Post to Instagram
-    print(f"   Posting to Instagram...")
+    print(f"\n5. Posting to Instagram...")
     ig_client = InstagramReelsClient(
         access_token=os.environ["INSTAGRAM_ACCESS_TOKEN"],
         instagram_account_id=os.environ["INSTAGRAM_ACCOUNT_ID"],
     )
 
-    # Build proper SEO caption from metadata (or fallback to generic)
+    # Build caption
     if metadata:
-        caption = build_reel_caption(
-            metadata=metadata,
-            youtube_url=youtube_url,
-        )
+        caption = build_reel_caption(metadata=metadata, youtube_url=youtube_url)
         print(f"   Caption: \"{metadata.title}\" ({len(caption)} chars, {caption.count('#')} hashtags)")
     else:
         caption = (
@@ -320,33 +237,36 @@ async def _encode_and_post_reel(
         video_url=api_url,
         caption=caption,
         share_to_feed=True,
-        scheduled_publish_time=scheduled_time,
     )
 
-    # Cleanup temp files
+    # Cleanup
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)
 
     if result.success:
-        schedule_note = ""
-        if scheduled_time:
-            schedule_note = f" (scheduled: {scheduled_time.strftime('%Y-%m-%d %H:%M')})"
-        print(f"   ✅ Reel posted: {result.permalink}{schedule_note}")
+        print(f"\n   ✅ REEL POSTED! ID: {result.reel_id}")
+        print(f"   Permalink: {result.permalink}")
         return True
     else:
-        print(f"   ❌ Failed: {result.error}")
+        print(f"\n   ❌ FAILED: {result.error}")
         return False
 
 
 def main():
     parser = argparse.ArgumentParser(description="Instagram Reel Manager")
-    parser.add_argument("--mode", choices=["test", "backfill"], default="test")
+    parser.add_argument("--mode", choices=["test", "publish"], default="test")
+    parser.add_argument("--video-id", default="", help="Video ID for publish mode")
     args = parser.parse_args()
 
     if args.mode == "test":
         success = asyncio.run(test_mode())
+    elif args.mode == "publish":
+        if not args.video_id:
+            print("ERROR: --video-id is required for publish mode")
+            exit(1)
+        success = asyncio.run(publish_mode(args.video_id))
     else:
-        success = asyncio.run(backfill_mode())
+        success = False
 
     if not success:
         exit(1)
