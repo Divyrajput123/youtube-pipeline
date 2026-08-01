@@ -4,13 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Mode: test (single test upload) or backfill (post Reels for all scheduled videos)'
+        description: 'Mode: test (single test) or publish (post Reel for a specific video)'
         required: true
         default: 'test'
         type: choice
         options:
           - test
-          - backfill
+          - publish
+      video_id:
+        description: 'Video ID to create Reel for (required for publish mode, e.g. video-d10bd04d)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   instagram-reels:
@@ -60,6 +65,6 @@ jobs:
 
       - name: Run Instagram Reel (${{ github.event.inputs.mode }})
         run: |
-          PYTHONPATH=src python scripts/instagram_reel_manager.py --mode ${{ github.event.inputs.mode }}
+          PYTHONPATH=src python scripts/instagram_reel_manager.py --mode ${{ github.event.inputs.mode }} --video-id "${{ github.event.inputs.video_id }}"
         env:
           PYTHONUNBUFFERED: 1
