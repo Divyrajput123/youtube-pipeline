@@ -1,23 +1,27 @@
-"""Instagram Reel Manager — test or publish a Reel for a specific video.
+"""Instagram Reel Manager — daily auto-posting with duplicate prevention.
 
 Modes:
-  test    — Upload a single test Reel from any existing pipeline video
-  publish — Create and publish a Reel for a specific video ID
+  daily   — Automatically post 1 Reel for the next unposted video (for cron)
+  publish — Post a Reel for a specific video ID (manual)
+  test    — Post a test Reel from any existing video
 
 Usage:
-  python scripts/instagram_reel_manager.py --mode test
+  python scripts/instagram_reel_manager.py --mode daily
   python scripts/instagram_reel_manager.py --mode publish --video-id video-d10bd04d
+  python scripts/instagram_reel_manager.py --mode test
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,51 +34,176 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Tracking file stored on Drive — records which videos have been posted to Instagram
+_TRACKING_FILENAME = "instagram_posted.json"
+_TRACKING_FOLDER = "ai-youtube-pipeline"
 
-async def test_mode():
-    """Upload a single test Reel from an existing pipeline video."""
+
+# ---------------------------------------------------------------------------
+# Tracking: which videos have been posted to Instagram
+# ---------------------------------------------------------------------------
+
+
+async def _load_tracking(asset_store) -> dict:
+    """Load the Instagram tracking file from Drive.
+
+    Returns dict like:
+    {
+        "posted": [
+            {"video_id": "video-abc123", "posted_at": "2026-08-01", "reel_id": "123", "permalink": "..."},
+            ...
+        ]
+    }
+    """
+    try:
+        data = await asset_store._drive.download_file(_TRACKING_FOLDER, _TRACKING_FILENAME)
+        return json.loads(data.decode("utf-8"))
+    except Exception:
+        # File doesn't exist yet — start fresh
+        return {"posted": []}
+
+
+async def _save_tracking(asset_store, tracking: dict) -> None:
+    """Save the Instagram tracking file to Drive."""
+    data = json.dumps(tracking, indent=2).encode("utf-8")
+    await asset_store._drive.upload_file(_TRACKING_FOLDER, _TRACKING_FILENAME, data)
+
+
+def _is_already_posted(tracking: dict, video_id: str) -> bool:
+    """Check if a video has already been posted to Instagram."""
+    return any(entry["video_id"] == video_id for entry in tracking.get("posted", []))
+
+
+def _posted_today(tracking: dict) -> bool:
+    """Check if any Reel was already posted today."""
+    today = date.today().isoformat()
+    return any(entry.get("posted_at", "").startswith(today) for entry in tracking.get("posted", []))
+
+
+# ---------------------------------------------------------------------------
+# Modes
+# ---------------------------------------------------------------------------
+
+
+async def daily_mode():
+    """Post 1 Reel for the next unposted video. Skips if already posted today."""
     from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
-    from pipeline.models import SubFolder
+    from pipeline.content_calendar import Content_Calendar, NotionMCPClient
+    from pipeline.models import SubFolder, PipelineStatus
 
     print("=" * 60)
-    print("  MODE: TEST — Single Reel upload")
+    print("  MODE: DAILY — Post 1 Reel (next unposted video)")
     print("=" * 60)
 
     drive_client = GoogleDriveMCPClient()
     asset_store = Asset_Store(drive_client=drive_client)
 
-    # Find a real video from Drive
-    print("\n1. Finding a real video on Drive...")
-    video_ids = [
-        "video-d10bd04d", "video-96bdb181r", "video-94a43bder",
-        "video-ae51253er", "video-0e600383", "video-8afb7a5d",
-    ]
+    # Load tracking
+    tracking = await _load_tracking(asset_store)
+    posted_count = len(tracking.get("posted", []))
+    print(f"\n   Tracking: {posted_count} videos already posted to Instagram")
 
-    video_bytes = None
-    used_id = None
-    for vid_id in video_ids:
+    # Check if already posted today
+    if _posted_today(tracking):
+        print("   Already posted 1 Reel today — skipping. Will post again tomorrow.")
+        return True
+
+    # Query Notion for scheduled/published videos
+    print("\n1. Querying Notion for videos with Reels ready...")
+    notion_token = os.environ.get("NOTION_AUTH_TOKEN", "")
+    notion_db_id = os.environ.get("NOTION_DATABASE_ID", "")
+    notion_client = NotionMCPClient(auth_token=notion_token, database_id=notion_db_id)
+    content_calendar = Content_Calendar(notion_client=notion_client, database_id=notion_db_id)
+
+    statuses_to_check = [PipelineStatus.SCHEDULED, PipelineStatus.PUBLISHED, PipelineStatus.UNLISTED]
+    all_videos = []
+    for status in statuses_to_check:
         try:
-            video_bytes = await asset_store.read(
+            videos = await content_calendar.list_videos_by_status(status)
+            all_videos.extend(videos)
+        except Exception:
+            continue
+
+    print(f"   Found {len(all_videos)} total videos")
+
+    # Filter out already-posted videos
+    candidates = [
+        v for v in all_videos
+        if not _is_already_posted(tracking, v["video_id"])
+    ]
+    print(f"   {len(candidates)} not yet posted to Instagram")
+
+    if not candidates:
+        print("\n   No unposted videos remaining — all caught up!")
+        return True
+
+    # Pick the first candidate (oldest unposted)
+    video = candidates[0]
+    vid_id = video["video_id"]
+    print(f"\n2. Selected: {vid_id}")
+
+    # Check if reel.mp4 exists on Drive (pre-encoded by pipeline)
+    reel_bytes = None
+    try:
+        reel_bytes = await asset_store.read(
+            video_id=vid_id,
+            subfolder=SubFolder.VIDEOS,
+            filename="reel.mp4",
+        )
+        if reel_bytes and len(reel_bytes) > 50_000:
+            print(f"   Found pre-encoded reel.mp4 ({len(reel_bytes)/(1024*1024):.1f} MB)")
+    except Exception:
+        reel_bytes = None
+
+    # If no pre-encoded reel, encode from source video
+    if not reel_bytes:
+        print(f"   No pre-encoded reel — encoding from source video...")
+        try:
+            source_bytes = await asset_store.read(
                 video_id=vid_id,
                 subfolder=SubFolder.VIDEOS,
                 filename=f"{vid_id}_v1.mp4",
             )
-            if video_bytes and len(video_bytes) > 100_000:
-                used_id = vid_id
-                print(f"   Found {vid_id}: {len(video_bytes)/(1024*1024):.1f} MB")
-                break
-        except Exception:
-            continue
+            if not source_bytes or len(source_bytes) < 100_000:
+                print(f"   ERROR: Source video too small or missing — skipping {vid_id}")
+                return False
+        except Exception as exc:
+            print(f"   ERROR: Could not fetch source video — {exc}")
+            return False
 
-    if not video_bytes:
-        print("   ERROR: No real video found on Drive")
-        return False
+        reel_bytes = await _encode_reel(source_bytes)
+        if not reel_bytes:
+            return False
 
-    return await _encode_and_post_reel(asset_store, video_bytes, used_id)
+        # Save encoded reel to Drive for future use
+        await asset_store.write(
+            video_id=vid_id,
+            subfolder=SubFolder.VIDEOS,
+            filename="reel.mp4",
+            content=reel_bytes,
+        )
+
+    # Post to Instagram
+    result = await _post_reel(asset_store, reel_bytes, vid_id)
+
+    if result:
+        # Update tracking
+        reel_id, permalink = result
+        tracking["posted"].append({
+            "video_id": vid_id,
+            "posted_at": datetime.now(timezone.utc).isoformat(),
+            "reel_id": reel_id,
+            "permalink": permalink,
+        })
+        await _save_tracking(asset_store, tracking)
+        print(f"\n   Tracking updated ({len(tracking['posted'])} total posted)")
+        return True
+
+    return False
 
 
 async def publish_mode(video_id: str):
-    """Create and publish a Reel for a specific video ID."""
+    """Post a Reel for a specific video ID."""
     from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
     from pipeline.models import SubFolder
 
@@ -83,65 +212,142 @@ async def publish_mode(video_id: str):
     print("=" * 60)
 
     if not video_id:
-        print("   ERROR: --video-id is required for publish mode")
+        print("   ERROR: --video-id is required")
         return False
 
     drive_client = GoogleDriveMCPClient()
     asset_store = Asset_Store(drive_client=drive_client)
 
-    # Download the video
-    print(f"\n1. Downloading {video_id} from Drive...")
+    # Load tracking to check if already posted
+    tracking = await _load_tracking(asset_store)
+    if _is_already_posted(tracking, video_id):
+        print(f"   WARNING: {video_id} was already posted to Instagram")
+        print(f"   Posting anyway (manual override)...")
+
+    # Check for pre-encoded reel
+    reel_bytes = None
     try:
-        video_bytes = await asset_store.read(
+        reel_bytes = await asset_store.read(
             video_id=video_id,
             subfolder=SubFolder.VIDEOS,
-            filename=f"{video_id}_v1.mp4",
+            filename="reel.mp4",
         )
-        if not video_bytes or len(video_bytes) < 100_000:
-            print(f"   ERROR: Video file too small or missing ({len(video_bytes) if video_bytes else 0} bytes)")
+        if reel_bytes and len(reel_bytes) > 50_000:
+            print(f"   Found pre-encoded reel.mp4 ({len(reel_bytes)/(1024*1024):.1f} MB)")
+    except Exception:
+        reel_bytes = None
+
+    # If no pre-encoded reel, encode from source
+    if not reel_bytes:
+        print(f"   No pre-encoded reel — encoding from source...")
+        try:
+            source_bytes = await asset_store.read(
+                video_id=video_id,
+                subfolder=SubFolder.VIDEOS,
+                filename=f"{video_id}_v1.mp4",
+            )
+            if not source_bytes or len(source_bytes) < 100_000:
+                print(f"   ERROR: Source video not found or too small")
+                return False
+            print(f"   Source: {len(source_bytes)/(1024*1024):.1f} MB")
+        except Exception as exc:
+            print(f"   ERROR: {exc}")
             return False
-        print(f"   Downloaded: {len(video_bytes)/(1024*1024):.1f} MB")
-    except Exception as exc:
-        print(f"   ERROR: Could not fetch video — {exc}")
-        return False
 
-    return await _encode_and_post_reel(asset_store, video_bytes, video_id)
+        reel_bytes = await _encode_reel(source_bytes)
+        if not reel_bytes:
+            return False
 
-
-async def _encode_and_post_reel(
-    asset_store,
-    video_bytes: bytes,
-    video_id: str,
-) -> bool:
-    """Encode a video as Reel, upload to Drive, and publish to Instagram immediately."""
-    from pipeline.models import SubFolder, MetadataPackage
-    from pipeline.instagram_reels import InstagramReelsClient, build_reel_caption
-    import json as _json
-
-    # Try to load the video's metadata for proper caption
-    metadata = None
-    youtube_url = ""
-    try:
-        meta_bytes = await asset_store.read(
+        # Save for future
+        await asset_store.write(
             video_id=video_id,
-            subfolder=SubFolder.METADATA,
-            filename=f"{video_id}.json",
+            subfolder=SubFolder.VIDEOS,
+            filename="reel.mp4",
+            content=reel_bytes,
         )
-        if meta_bytes:
-            meta_dict = _json.loads(meta_bytes.decode("utf-8"))
-            metadata = MetadataPackage(**meta_dict)
-            youtube_url = f"https://www.youtube.com/watch?v={metadata.youtube_video_id}" if metadata.youtube_video_id else ""
-            print(f"   Metadata loaded: \"{metadata.title}\"")
-    except Exception as exc:
-        logger.debug("Could not load metadata for %s: %s", video_id, exc)
-        print(f"   Metadata not found — will use fallback caption")
 
-    # Encode for Instagram Reels
-    print(f"\n2. Encoding for Instagram Reels...")
+    # Post
+    result = await _post_reel(asset_store, reel_bytes, video_id)
+
+    if result:
+        reel_id, permalink = result
+        # Update tracking
+        tracking["posted"].append({
+            "video_id": video_id,
+            "posted_at": datetime.now(timezone.utc).isoformat(),
+            "reel_id": reel_id,
+            "permalink": permalink,
+        })
+        await _save_tracking(asset_store, tracking)
+        return True
+
+    return False
+
+
+async def test_mode():
+    """Post a test Reel from any available video."""
+    from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
+    from pipeline.models import SubFolder
+
+    print("=" * 60)
+    print("  MODE: TEST — Single test Reel")
+    print("=" * 60)
+
+    drive_client = GoogleDriveMCPClient()
+    asset_store = Asset_Store(drive_client=drive_client)
+
+    # Find any real video
+    video_ids = [
+        "video-d10bd04d", "video-96bdb181r", "video-94a43bder",
+        "video-ae51253er", "video-0e600383", "video-8afb7a5d",
+    ]
+
+    for vid_id in video_ids:
+        try:
+            reel_bytes = await asset_store.read(
+                video_id=vid_id,
+                subfolder=SubFolder.VIDEOS,
+                filename="reel.mp4",
+            )
+            if reel_bytes and len(reel_bytes) > 50_000:
+                print(f"   Using pre-encoded reel from {vid_id}")
+                result = await _post_reel(asset_store, reel_bytes, vid_id)
+                return bool(result)
+        except Exception:
+            continue
+
+    print("   No pre-encoded reels found — trying source videos...")
+    for vid_id in video_ids:
+        try:
+            source = await asset_store.read(
+                video_id=vid_id,
+                subfolder=SubFolder.VIDEOS,
+                filename=f"{vid_id}_v1.mp4",
+            )
+            if source and len(source) > 100_000:
+                print(f"   Encoding from {vid_id}...")
+                reel_bytes = await _encode_reel(source)
+                if reel_bytes:
+                    result = await _post_reel(asset_store, reel_bytes, vid_id)
+                    return bool(result)
+        except Exception:
+            continue
+
+    print("   ERROR: No videos found")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _encode_reel(source_bytes: bytes) -> bytes | None:
+    """Encode source video bytes into Instagram Reel format."""
     tmpdir = tempfile.mkdtemp()
     full_path = Path(tmpdir) / "full.mp4"
     reel_path = Path(tmpdir) / "reel.mp4"
-    full_path.write_bytes(video_bytes)
+    full_path.write_bytes(source_bytes)
 
     try:
         subprocess.run([
@@ -157,23 +363,35 @@ async def _encode_and_post_reel(
             str(reel_path),
         ], capture_output=True, timeout=180, check=True)
     except subprocess.CalledProcessError as exc:
-        print(f"   FFmpeg encoding failed: {exc.stderr.decode()[:200]}")
+        print(f"   FFmpeg failed: {exc.stderr.decode()[:200]}")
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
-        return False
+        return None
 
-    reel_size = reel_path.stat().st_size
-    print(f"   Encoded: {reel_size/(1024*1024):.2f} MB")
-
-    if reel_size < 50_000:
-        print(f"   ERROR: Encoded file too small ({reel_size} bytes)")
-        import shutil
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        return False
-
-    # Upload to Drive
-    print(f"\n3. Uploading Reel to Drive...")
     reel_bytes = reel_path.read_bytes()
+    print(f"   Encoded: {len(reel_bytes)/(1024*1024):.2f} MB")
+
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if len(reel_bytes) < 50_000:
+        print(f"   ERROR: Encoded file too small")
+        return None
+
+    return reel_bytes
+
+
+async def _post_reel(asset_store, reel_bytes: bytes, video_id: str) -> tuple[str, str] | None:
+    """Upload reel to Drive (if not already there) and post to Instagram.
+
+    Returns (reel_id, permalink) on success, None on failure.
+    """
+    from pipeline.models import SubFolder, MetadataPackage
+    from pipeline.instagram_reels import InstagramReelsClient, build_reel_caption
+    import httpx
+
+    # Upload to Drive (overwrites if exists)
+    print(f"\n3. Uploading to Drive...")
     drive_url = await asset_store.write(
         video_id=video_id,
         subfolder=SubFolder.VIDEOS,
@@ -185,35 +403,53 @@ async def _encode_and_post_reel(
     drive_id_match = re.search(r"/file/d/([^/]+)", drive_url)
     gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
     if not drive_id_match or not gcloud_key:
-        print(f"   ERROR: Cannot build API URL (file_id={bool(drive_id_match)}, key={bool(gcloud_key)})")
-        import shutil
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        return False
+        print(f"   ERROR: Cannot build URL (file_id={bool(drive_id_match)}, key={bool(gcloud_key)})")
+        return None
 
     file_id = drive_id_match.group(1)
     api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={gcloud_key}"
 
-    # Wait for Drive CDN propagation
-    print(f"\n4. Waiting for Drive CDN propagation...")
-    import httpx
+    # Wait for CDN propagation (poll until accessible)
+    print(f"\n4. Verifying URL accessibility...")
     url_ready = False
-    for attempt in range(40):  # 40 * 15s = 10 min max
+    for attempt in range(40):  # 10 min max
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.head(api_url)
                 content_length = int(resp.headers.get("content-length", "0"))
                 if resp.status_code == 200 and content_length > 100_000:
-                    print(f"   URL ready (HTTP {resp.status_code}, {content_length} bytes) after {(attempt+1)*15}s")
+                    print(f"   Ready (HTTP 200, {content_length} bytes) after {(attempt+1)*15}s")
                     url_ready = True
                     break
-                else:
-                    print(f"   Not ready yet (HTTP {resp.status_code}, {content_length} bytes) — waiting...")
-        except Exception as exc:
-            print(f"   Check failed ({exc}) — waiting...")
+        except Exception:
+            pass
         await asyncio.sleep(15)
 
     if not url_ready:
-        print(f"   WARNING: URL not confirmed accessible after 10 min — trying anyway")
+        print(f"   WARNING: URL not confirmed after 10 min — trying anyway")
+
+    # Load metadata for caption
+    metadata = None
+    youtube_url = ""
+    try:
+        meta_bytes = await asset_store.read(
+            video_id=video_id,
+            subfolder=SubFolder.METADATA,
+            filename=f"{video_id}.json",
+        )
+        if meta_bytes:
+            meta_dict = json.loads(meta_bytes.decode("utf-8"))
+            metadata = MetadataPackage(**meta_dict)
+            youtube_url = f"https://www.youtube.com/watch?v={metadata.youtube_video_id}" if metadata.youtube_video_id else ""
+            print(f"   Caption from: \"{metadata.title}\"")
+    except Exception:
+        print(f"   No metadata found — using fallback caption")
+
+    # Build caption
+    if metadata:
+        caption = build_reel_caption(metadata=metadata, youtube_url=youtube_url)
+    else:
+        caption = "Full breakdown on YouTube (link in bio)\n\n#superhero #reels #marvel #dc #explorepage #viral #fyp"
 
     # Post to Instagram
     print(f"\n5. Posting to Instagram...")
@@ -222,49 +458,41 @@ async def _encode_and_post_reel(
         instagram_account_id=os.environ["INSTAGRAM_ACCOUNT_ID"],
     )
 
-    # Build caption
-    if metadata:
-        caption = build_reel_caption(metadata=metadata, youtube_url=youtube_url)
-        print(f"   Caption: \"{metadata.title}\" ({len(caption)} chars, {caption.count('#')} hashtags)")
-    else:
-        caption = (
-            f"Full breakdown on YouTube (link in bio)\n\n"
-            f"#superhero #reels #marvel #dc #explorepage #viral #fyp"
-        )
-        print(f"   Using fallback caption (no metadata found)")
-
     result = await ig_client.upload_reel(
         video_url=api_url,
         caption=caption,
         share_to_feed=True,
     )
 
-    # Cleanup
-    import shutil
-    shutil.rmtree(tmpdir, ignore_errors=True)
-
     if result.success:
         print(f"\n   ✅ REEL POSTED! ID: {result.reel_id}")
         print(f"   Permalink: {result.permalink}")
-        return True
+        return (result.reel_id, result.permalink)
     else:
         print(f"\n   ❌ FAILED: {result.error}")
-        return False
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def main():
     parser = argparse.ArgumentParser(description="Instagram Reel Manager")
-    parser.add_argument("--mode", choices=["test", "publish"], default="test")
+    parser.add_argument("--mode", choices=["daily", "publish", "test"], default="daily")
     parser.add_argument("--video-id", default="", help="Video ID for publish mode")
     args = parser.parse_args()
 
-    if args.mode == "test":
-        success = asyncio.run(test_mode())
+    if args.mode == "daily":
+        success = asyncio.run(daily_mode())
     elif args.mode == "publish":
         if not args.video_id:
-            print("ERROR: --video-id is required for publish mode")
+            print("ERROR: --video-id required for publish mode")
             exit(1)
         success = asyncio.run(publish_mode(args.video_id))
+    elif args.mode == "test":
+        success = asyncio.run(test_mode())
     else:
         success = False
 

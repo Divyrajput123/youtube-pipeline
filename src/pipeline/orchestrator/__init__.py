@@ -748,14 +748,16 @@ class Orchestrator:
             logger.warning("start_pipeline: Shorts extraction failed (non-fatal): %s", exc)
 
         # Upload Instagram Reel (separate encoding from Shorts, synced schedule)
+        # NOTE: Reel posting during the main pipeline is unreliable due to Drive CDN
+        # propagation delays for freshly uploaded files. Instead, we just encode and
+        # upload the reel.mp4 to Drive. Use the "Instagram Reel Manager" workflow
+        # (publish mode with the video_id) to actually post it to Instagram after
+        # the file has had time to propagate on Drive.
         if self._instagram_reels_client and self._config.instagram_reels.enabled:
             try:
-                # 1. Encode video for Instagram Reels using asset_store.read()
-                #    (avoids the flaky _fetch_bytes path that has SSL issues)
                 import pathlib as _pl  # noqa: PLC0415
                 import subprocess as _sp  # noqa: PLC0415
                 import tempfile as _tmp  # noqa: PLC0415
-                import re as _re  # noqa: PLC0415
 
                 logger.info("Instagram Reel: downloading source video from Drive...")
                 source_bytes = await self._asset_store.read(
@@ -820,103 +822,25 @@ class Orchestrator:
                     len(reel_bytes) / (1024 * 1024),
                 )
 
-                # 2. Upload to Drive
-                reel_drive_url = await self._asset_store.write(
+                # Upload to Drive (so the Reel Manager workflow can post it later)
+                await self._asset_store.write(
                     video_id=video_id,
                     subfolder=SubFolder.VIDEOS,
                     filename="reel.mp4",
                     content=reel_bytes,
                 )
-                logger.info("Instagram Reel: uploaded to Drive → %s", reel_drive_url)
-
-                # Build Drive API v3 direct media URL
-                drive_id_match = _re.search(r"/file/d/([^/]+)", reel_drive_url)
-                gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
                 logger.info(
-                    "Instagram Reel: Drive file_id=%s, GOOGLE_CLOUD_API_KEY set=%s (len=%d)",
-                    drive_id_match.group(1) if drive_id_match else "NOT_FOUND",
-                    bool(gcloud_key),
-                    len(gcloud_key),
+                    "Instagram Reel: reel.mp4 uploaded to Drive for video_id=%s. "
+                    "Use 'Instagram Reel Manager → publish' workflow to post it.",
+                    video_id,
                 )
 
-                if drive_id_match and gcloud_key:
-                    file_id = drive_id_match.group(1)
-                    reel_public_url = (
-                        f"https://www.googleapis.com/drive/v3/files/{file_id}"
-                        f"?alt=media&key={gcloud_key}"
-                    )
-                    logger.info("Instagram Reel: using Drive API v3 URL (direct media)")
-                elif drive_id_match:
-                    file_id = drive_id_match.group(1)
-                    reel_public_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
-                    logger.warning("Instagram Reel: GOOGLE_CLOUD_API_KEY not set! Falling back")
-                else:
-                    reel_public_url = reel_drive_url
-                    logger.warning("Instagram Reel: could not extract file_id from Drive URL")
-
-                logger.info("Instagram Reel: final URL = %s", reel_public_url[:100])
-
-                # Verify the URL is actually accessible before submitting to Instagram.
-                # Poll every 15s for up to 10 minutes until Drive serves the file.
-                import httpx as _httpx  # noqa: PLC0415
-                url_ready = False
-                for verify_attempt in range(40):  # 40 * 15s = 10 minutes max
-                    try:
-                        async with _httpx.AsyncClient(timeout=15.0) as verify_client:
-                            verify_resp = await verify_client.head(reel_public_url)
-                            content_length = int(verify_resp.headers.get("content-length", "0"))
-                            if verify_resp.status_code == 200 and content_length > 100_000:
-                                logger.info(
-                                    "Instagram Reel: URL verified accessible (HTTP %d, %d bytes) after %ds",
-                                    verify_resp.status_code, content_length, (verify_attempt + 1) * 15,
-                                )
-                                url_ready = True
-                                break
-                            else:
-                                logger.info(
-                                    "Instagram Reel: URL not ready yet (HTTP %d, %d bytes) — waiting 15s...",
-                                    verify_resp.status_code, content_length,
-                                )
-                    except Exception as verify_exc:
-                        logger.info("Instagram Reel: URL check failed (%s) — waiting 15s...", verify_exc)
-                    await asyncio.sleep(15)
-
-                if not url_ready:
-                    logger.warning("Instagram Reel: URL never became accessible after 10 min — posting anyway")
-
-                youtube_full_url = f"https://www.youtube.com/watch?v={yt_ref.youtube_video_id}"
-                thumbnail_url = visual.thumbnail_url or None
-
-                # 3. Upload/schedule Reel at the same time as YouTube publish
-                reel_result = await upload_reel_from_short(
-                    client=self._instagram_reels_client,
-                    video_public_url=reel_public_url,
-                    metadata=metadata,
-                    youtube_url=youtube_full_url,
-                    thumbnail_url=thumbnail_url,
-                    extra_hashtags=self._config.instagram_reels.extra_hashtags,
-                    scheduled_publish_time=scheduled_publish_dt,
-                )
-
-                if reel_result.success:
-                    schedule_note = ""
-                    if scheduled_publish_dt:
-                        schedule_note = f" (scheduled for {scheduled_publish_dt.strftime('%Y-%m-%d %H:%M UTC')})"
-                    logger.info(
-                        "start_pipeline: Instagram Reel ready — %s (%s)%s",
-                        reel_result.reel_id, reel_result.permalink, schedule_note,
-                    )
-                else:
-                    logger.warning(
-                        "start_pipeline: Instagram Reel failed — %s", reel_result.error,
-                    )
-
-                # 4. Cleanup temp files
+                # Cleanup temp files
                 import shutil as _shutil  # noqa: PLC0415
                 _shutil.rmtree(tmpdir, ignore_errors=True)
 
             except Exception as exc:
-                logger.warning("start_pipeline: Instagram Reels upload failed (non-fatal): %s", exc)
+                logger.warning("start_pipeline: Instagram Reels encoding failed (non-fatal): %s", exc)
 
         # Add end-screen linking to best-performing video (best-effort)
         try:
