@@ -1,18 +1,24 @@
 name: Instagram Reel Manager
 
 on:
+  # Daily at 6 PM IST (12:30 UTC) — posts 1 Reel automatically
+  schedule:
+    - cron: '30 12 * * *'
+
+  # Manual trigger
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Mode: test (single test) or publish (post Reel for a specific video)'
+        description: 'Mode: daily (auto 1/day), publish (specific video), test'
         required: true
-        default: 'test'
+        default: 'daily'
         type: choice
         options:
-          - test
+          - daily
           - publish
+          - test
       video_id:
-        description: 'Video ID to create Reel for (required for publish mode, e.g. video-d10bd04d)'
+        description: 'Video ID (required for publish mode, e.g. video-d10bd04d)'
         required: false
         default: ''
         type: string
@@ -20,7 +26,7 @@ on:
 jobs:
   instagram-reels:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -36,7 +42,6 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
-          ffmpeg -version | head -1
 
       - name: Install dependencies
         run: pip install -e .
@@ -63,8 +68,26 @@ jobs:
           sed -i 's/^[[:space:]]*//' .env
           echo "✅ .env created"
 
-      - name: Run Instagram Reel (${{ github.event.inputs.mode }})
+      - name: Determine mode
+        id: mode
         run: |
-          PYTHONPATH=src python scripts/instagram_reel_manager.py --mode ${{ github.event.inputs.mode }} --video-id "${{ github.event.inputs.video_id }}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "mode=daily" >> $GITHUB_OUTPUT
+            echo "video_id=" >> $GITHUB_OUTPUT
+          else
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "video_id=${{ github.event.inputs.video_id }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Instagram Reel Manager
+        run: |
+          MODE="${{ steps.mode.outputs.mode }}"
+          VIDEO_ID="${{ steps.mode.outputs.video_id }}"
+          echo "Mode: $MODE, Video ID: $VIDEO_ID"
+          if [ "$MODE" = "publish" ] && [ -n "$VIDEO_ID" ]; then
+            PYTHONPATH=src python scripts/instagram_reel_manager.py --mode publish --video-id "$VIDEO_ID"
+          else
+            PYTHONPATH=src python scripts/instagram_reel_manager.py --mode "$MODE"
+          fi
         env:
           PYTHONUNBUFFERED: 1

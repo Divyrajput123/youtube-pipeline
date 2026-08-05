@@ -339,36 +339,44 @@ CHANNEL STYLE:
 
 VIDEO TOPIC: {topic.title}
 
-STORYTELLING STYLE (CRITICAL):
-You are a cinematic narrator telling an EPIC STORY — not listing facts.
-- Open with a dramatic scene-setting moment ("Picture this..." / "The year is..." / "In a universe where...")
-- Build TENSION throughout — every segment should escalate stakes
-- Use vivid imagery: describe what the viewer should SEE in their mind
-- Write like a movie trailer narrator, not a Wikipedia article
-- Create emotional beats: awe, suspense, surprise, triumph
-- Use short punchy sentences for impact. Then follow with a longer one for rhythm.
-- Include dramatic pauses and revelations ("But here's what nobody talks about...")
-- End segments with cliffhangers that pull into the next section
-- Make the viewer FEEL the power, the speed, the destruction
+STORYTELLING STYLE (THIS IS THE #1 PRIORITY — OVERRIDE EVERYTHING ELSE):
+You are a cinematic narrator telling an EPIC STORY — not explaining facts.
+Your script should feel like a movie, not a textbook. Every sentence should make
+the viewer feel something: awe, fear, excitement, curiosity.
 
-BAD (boring factual): "Superman has super strength and can fly at high speeds."
-GOOD (cinematic storytelling): "Imagine a being so powerful that when he clenches his fist... entire mountains crumble to dust. When he takes flight, sonic booms tear through the sky like thunder from an angry god."
+RULES FOR STORYTELLING:
+- NEVER say "Let's talk about..." or "In this video we'll explore..." — these are boring
+- NEVER list facts like a Wikipedia article
+- ALWAYS write in scenes: describe what's HAPPENING, not what something IS
+- Open EVERY segment by dropping the viewer into the middle of action
+- Use present tense for action scenes: "He raises his fist. The ground cracks."
+- Short sentences for impact. Then a longer sentence to let the rhythm breathe and build.
+- Create REVEALS and TWISTS: "But here's the thing nobody realizes..."
+- End every segment on a cliffhanger that forces the viewer to keep watching
+- Write like you're narrating a movie trailer combined with a fight commentary
+
+BAD (boring factual — NEVER DO THIS):
+"Superman has super strength and can fly at high speeds. He was born on Krypton and sent to Earth. His powers include heat vision, freeze breath, and invulnerability."
+
+GOOD (cinematic storytelling — ALWAYS DO THIS):
+"[pause] Picture this. A man floating above the clouds... fists clenched... cape tearing in the wind. Below him, an entire city holds its breath. Because the last time he hit something this hard... [emphasis]a mountain disappeared.[/emphasis] Born on a dying world, launched into the stars as an infant, he crash-landed on a planet where the sun itself makes him a god. Every photon that touches his skin becomes pure, unstoppable power."
 
 REQUIRED SCRIPT STRUCTURE:
-Write a complete YouTube video script with the following sections in order:
+Write a complete YouTube video script told as a STORY with these sections:
 
 1. HOOK (≤ {_HOOK_MAX_WORDS} words / ≤ {_HOOK_MAX_SECONDS} seconds at {_WPM} WPM)
-   - Immediately grab viewer attention
-   - State the core promise or question of the video
+   - Drop the viewer into a dramatic moment — mid-action, mid-crisis
+   - Pose the central question as a life-or-death stakes scenario
 
-2. BODY ({body_segments} segments)
-   - Each segment covers one distinct aspect of the topic
-   - Each segment is separated by a clear heading
-   - Maintain the channel pacing of approximately {sp.pacing.avg_words_per_minute} WPM
+2. BODY ({body_segments} segments — each told as a SCENE, not a lecture)
+   - Each segment is a new SCENE in the story with rising stakes
+   - Describe powers/abilities through ACTION, not description
+   - Show don't tell: "His fist connects. Shockwave levels six city blocks." NOT "He has super strength."
+   - Each segment ends with a twist or escalation that pulls into the next
 
 3. CTA (≤ {_CTA_MAX_WORDS} words / ≤ {_CTA_MAX_SECONDS} seconds at {_WPM} WPM)
-   - Direct, actionable call-to-action
-   - Encourage subscription, comment, or follow-up action
+   - Wrap the story with a final dramatic statement
+   - Then transition to call-to-action naturally
 
 ANNOTATION REQUIREMENTS (MANDATORY):
 - Add AT LEAST ONE speaker-direction annotation per section/segment using these tags:

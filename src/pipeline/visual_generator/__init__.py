@@ -1165,8 +1165,8 @@ async def _generate_ai_thumbnail(
     except Exception as exc:
         logger.warning("Claude thumbnail text generation failed: %s", exc)
 
-    # ---- Step 2: Pollinations.AI generates cinematic background at native 1280x720
-    # No upscaling needed — Pollinations renders at exact requested resolution.
+    # ---- Step 2: Generate cinematic background image
+    # Try Ideogram (best quality) first, fall back to Pollinations.AI
     import urllib.parse  # noqa: PLC0415
     import random as _random  # noqa: PLC0415
 
@@ -1179,22 +1179,53 @@ async def _generate_ai_thumbnail(
         f"shallow depth of field, film grain, 8K detail, "
         f"like a real Hollywood movie poster screenshot, no text anywhere"
     )
-    encoded_prompt = urllib.parse.quote(image_prompt)
-    thumb_seed = _random.randint(0, 99999)
-    url = (
-        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-        f"?width=1280&height=720&model=flux-pro&nologo=true&enhance=true&seed={thumb_seed}"
-    )
 
     img_bytes = None
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as http_client:
-            resp = await http_client.get(url)
-            resp.raise_for_status()
-            img_bytes = resp.content
-        logger.info("Pollinations thumbnail generated (%d bytes)", len(img_bytes))
-    except Exception as exc:
-        logger.warning("Pollinations image generation failed: %s", exc)
+
+    # Try Ideogram first (best quality for thumbnails)
+    ideogram_key = os.environ.get("IDEOGRAM_API_KEY", "")
+    if ideogram_key:
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as http_client:
+                resp = await http_client.post(
+                    "https://api.ideogram.ai/v1/ideogram-v4/generate",
+                    headers={"Api-Key": ideogram_key, "Content-Type": "application/json"},
+                    json={"text_prompt": image_prompt, "aspect_ratio": "16:9"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                images = data.get("data", [])
+                if images and images[0].get("url"):
+                    img_url = images[0]["url"]
+                    img_resp = await http_client.get(img_url, timeout=30.0)
+                    img_resp.raise_for_status()
+                    img_bytes = img_resp.content
+                    logger.info("Ideogram thumbnail generated (%d bytes)", len(img_bytes))
+        except Exception as exc:
+            logger.warning("Ideogram thumbnail failed: %s — trying Pollinations", exc)
+            img_bytes = None
+
+    # Fallback: Pollinations.AI (free, no key needed)
+    if not img_bytes:
+        encoded_prompt = urllib.parse.quote(image_prompt)
+        thumb_seed = _random.randint(0, 99999)
+        url = (
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+            f"?width=1280&height=720&model=flux-pro&nologo=true&enhance=true&seed={thumb_seed}"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                resp = await http_client.get(url)
+                resp.raise_for_status()
+                img_bytes = resp.content
+            logger.info("Pollinations thumbnail generated (%d bytes)", len(img_bytes))
+        except Exception as exc:
+            logger.warning("Pollinations image generation failed: %s", exc)
+            return None
+
+    if not img_bytes:
+        logger.warning("No thumbnail image generated from any source")
         return None
 
     # ---- Step 3: Pillow overlays bold text with drop shadow --------------
