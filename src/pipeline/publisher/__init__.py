@@ -1260,8 +1260,10 @@ class Publisher:
                     result["id"], video_id, schedule_info,
                 )
 
-                # 5. Generate and set Shorts thumbnail (9:16)
-                short_video_id = result["id"]
+                # 5. Generate Shorts thumbnail (9:16) and save to Drive for Instagram Reels
+                # NOTE: YouTube Shorts API does not support custom thumbnails via API —
+                # they must be set manually in YouTube Studio. We still generate and save
+                # the thumbnail so the Instagram Reel Manager can use it as a cover image.
                 try:
                     from pipeline.thumbnail_generator import generate_shorts_thumbnail  # noqa: PLC0415
                     from pipeline.models import SubFolder  # noqa: PLC0415
@@ -1277,52 +1279,25 @@ class Publisher:
                                 thumb_fetch_exc,
                             )
 
-                    # Generate the 9:16 Shorts thumbnail
+                    # Generate the 9:16 thumbnail
                     shorts_thumb_bytes = await generate_shorts_thumbnail(
                         title=metadata.title,
                         script_content=metadata.description[:300],
                         existing_thumbnail_bytes=existing_thumb_bytes,
                     )
 
-                    if shorts_thumb_bytes and len(shorts_thumb_bytes) > 1000:
-                        # Save to Drive as thumbnail_shorts.jpg (reused by Instagram Reel Manager)
-                        if asset_store:
-                            thumb_drive_url = await asset_store.write(
-                                video_id=video_id,
-                                subfolder=SubFolder.THUMBNAILS,
-                                filename="thumbnail_shorts.jpg",
-                                content=shorts_thumb_bytes,
-                            )
-                            logger.info(
-                                "Publisher: Shorts thumbnail saved to Drive for video_id=%s",
-                                video_id,
-                            )
-
-                            # Set the thumbnail on the YouTube Short
-                            await self._yt.set_thumbnail(
-                                youtube_video_id=short_video_id,
-                                thumbnail_path=thumb_drive_url,
-                            )
-                            logger.info(
-                                "Publisher: Shorts thumbnail set on YouTube Short %s",
-                                short_video_id,
-                            )
-                        else:
-                            # No asset_store — write to temp file and set directly
-                            import tempfile as _tf  # noqa: PLC0415
-                            with _tf.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-                                f.write(shorts_thumb_bytes)
-                                temp_thumb_path = f.name
-
-                            await self._yt.set_thumbnail(
-                                youtube_video_id=short_video_id,
-                                thumbnail_path=temp_thumb_path,
-                            )
-                            _pl.Path(temp_thumb_path).unlink(missing_ok=True)
-                            logger.info(
-                                "Publisher: Shorts thumbnail set on YouTube Short %s (no Drive save)",
-                                short_video_id,
-                            )
+                    if shorts_thumb_bytes and len(shorts_thumb_bytes) > 1000 and asset_store:
+                        await asset_store.write(
+                            video_id=video_id,
+                            subfolder=SubFolder.THUMBNAILS,
+                            filename="thumbnail_shorts.jpg",
+                            content=shorts_thumb_bytes,
+                        )
+                        logger.info(
+                            "Publisher: Shorts thumbnail saved to Drive for video_id=%s "
+                            "(will be used as Instagram Reel cover)",
+                            video_id,
+                        )
 
                 except Exception as thumb_exc:
                     logger.warning(
