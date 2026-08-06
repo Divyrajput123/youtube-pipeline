@@ -451,6 +451,37 @@ async def _post_reel(asset_store, reel_bytes: bytes, video_id: str) -> tuple[str
     else:
         caption = "Full breakdown on YouTube (link in bio)\n\n#superhero #reels #marvel #dc #explorepage #viral #fyp"
 
+    # Fetch Shorts thumbnail for Reel cover image (if available on Drive)
+    cover_url = None
+    try:
+        thumb_bytes = await asset_store.read(
+            video_id=video_id,
+            subfolder=SubFolder.THUMBNAILS,
+            filename="thumbnail_shorts.jpg",
+        )
+        if thumb_bytes and len(thumb_bytes) > 1000:
+            # Upload/ensure it's on Drive and get a public URL
+            thumb_drive_url = await asset_store.write(
+                video_id=video_id,
+                subfolder=SubFolder.THUMBNAILS,
+                filename="thumbnail_shorts.jpg",
+                content=thumb_bytes,
+            )
+            # Build public API URL for the cover image
+            thumb_id_match = re.search(r"/file/d/([^/]+)", thumb_drive_url)
+            if thumb_id_match and gcloud_key:
+                cover_url = (
+                    f"https://www.googleapis.com/drive/v3/files/"
+                    f"{thumb_id_match.group(1)}?alt=media&key={gcloud_key}"
+                )
+                print(f"   Cover image: thumbnail_shorts.jpg found on Drive")
+            else:
+                print(f"   Cover image: could not build public URL")
+        else:
+            print(f"   Cover image: no thumbnail_shorts.jpg found — posting without cover")
+    except Exception as cover_exc:
+        print(f"   Cover image: not available ({cover_exc}) — posting without cover")
+
     # Post to Instagram
     print(f"\n5. Posting to Instagram...")
     ig_client = InstagramReelsClient(
@@ -461,6 +492,7 @@ async def _post_reel(asset_store, reel_bytes: bytes, video_id: str) -> tuple[str
     result = await ig_client.upload_reel(
         video_url=api_url,
         caption=caption,
+        cover_url=cover_url,
         share_to_feed=True,
     )
 
