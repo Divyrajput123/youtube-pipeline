@@ -738,6 +738,8 @@ class Orchestrator:
                 metadata=metadata,
                 full_video_id=yt_ref.youtube_video_id,
                 publish_at=scheduled_publish_dt,
+                thumbnail_url=visual.thumbnail_url,
+                asset_store=self._asset_store,
             )
             if short_id:
                 schedule_note = ""

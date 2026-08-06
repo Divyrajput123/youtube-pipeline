@@ -1164,6 +1164,8 @@ class Publisher:
         metadata: "MetadataPackage",
         full_video_id: str,
         publish_at: Optional[datetime] = None,
+        thumbnail_url: Optional[str] = None,
+        asset_store: Optional[Any] = None,
     ) -> Optional[str]:
         """Extract first 55 seconds from the full video, re-encode as 9:16, upload as Short.
 
@@ -1171,6 +1173,8 @@ class Publisher:
         1. Download the full MP4 from Drive.
         2. Use ffmpeg to extract the first 55 seconds and crop/scale to 1080x1920 (9:16).
         3. Upload via YouTubeDataAPIClient.upload_short with #Shorts in title.
+        4. Generate a 9:16 thumbnail and set it on the uploaded Short.
+        5. Save the Shorts thumbnail to Drive as thumbnail_shorts.jpg for Instagram Reels.
 
         Args:
             video_id: Pipeline video ID.
@@ -1180,6 +1184,10 @@ class Publisher:
             publish_at: Optional UTC datetime to schedule the Short. If provided,
                 the Short is uploaded as Private and scheduled to go public at this
                 time (same as the main video). If None, publishes immediately.
+            thumbnail_url: Optional Google Drive URL of the existing 16:9 thumbnail.
+                If provided, the Shorts thumbnail is reframed from this image.
+            asset_store: Optional Asset_Store instance for saving the Shorts
+                thumbnail to Drive (used as Instagram Reel cover later).
 
         Returns:
             YouTube Short video ID, or None if extraction/upload fails.
@@ -1251,7 +1259,78 @@ class Publisher:
                     "Publisher.extract_and_upload_short: uploaded Short %s for video_id=%s%s",
                     result["id"], video_id, schedule_info,
                 )
-                return result["id"]
+
+                # 5. Generate and set Shorts thumbnail (9:16)
+                short_video_id = result["id"]
+                try:
+                    from pipeline.thumbnail_generator import generate_shorts_thumbnail  # noqa: PLC0415
+                    from pipeline.models import SubFolder  # noqa: PLC0415
+
+                    # Fetch existing 16:9 thumbnail bytes if URL provided
+                    existing_thumb_bytes = None
+                    if thumbnail_url:
+                        try:
+                            existing_thumb_bytes = await self._yt._fetch_bytes(thumbnail_url)
+                        except Exception as thumb_fetch_exc:
+                            logger.debug(
+                                "Could not fetch existing thumbnail for Shorts reframe: %s",
+                                thumb_fetch_exc,
+                            )
+
+                    # Generate the 9:16 Shorts thumbnail
+                    shorts_thumb_bytes = await generate_shorts_thumbnail(
+                        title=metadata.title,
+                        script_content=metadata.description[:300],
+                        existing_thumbnail_bytes=existing_thumb_bytes,
+                    )
+
+                    if shorts_thumb_bytes and len(shorts_thumb_bytes) > 1000:
+                        # Save to Drive as thumbnail_shorts.jpg (reused by Instagram Reel Manager)
+                        if asset_store:
+                            thumb_drive_url = await asset_store.write(
+                                video_id=video_id,
+                                subfolder=SubFolder.THUMBNAILS,
+                                filename="thumbnail_shorts.jpg",
+                                content=shorts_thumb_bytes,
+                            )
+                            logger.info(
+                                "Publisher: Shorts thumbnail saved to Drive for video_id=%s",
+                                video_id,
+                            )
+
+                            # Set the thumbnail on the YouTube Short
+                            await self._yt.set_thumbnail(
+                                youtube_video_id=short_video_id,
+                                thumbnail_path=thumb_drive_url,
+                            )
+                            logger.info(
+                                "Publisher: Shorts thumbnail set on YouTube Short %s",
+                                short_video_id,
+                            )
+                        else:
+                            # No asset_store — write to temp file and set directly
+                            import tempfile as _tf  # noqa: PLC0415
+                            with _tf.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                                f.write(shorts_thumb_bytes)
+                                temp_thumb_path = f.name
+
+                            await self._yt.set_thumbnail(
+                                youtube_video_id=short_video_id,
+                                thumbnail_path=temp_thumb_path,
+                            )
+                            _pl.Path(temp_thumb_path).unlink(missing_ok=True)
+                            logger.info(
+                                "Publisher: Shorts thumbnail set on YouTube Short %s (no Drive save)",
+                                short_video_id,
+                            )
+
+                except Exception as thumb_exc:
+                    logger.warning(
+                        "Publisher: Shorts thumbnail generation/set failed for %s (non-fatal): %s",
+                        video_id, thumb_exc,
+                    )
+
+                return short_video_id
 
         except Exception as exc:
             logger.warning(

@@ -33,7 +33,8 @@ _MAX_ATTEMPTS = 3
 _RETRY_INTERVAL_SECONDS = 30.0
 
 # How far back (in hours) to query for trending topics.
-_TRENDING_HOURS_BACK = 2160  # 3 months — wide window for evergreen + recent content
+# Progressive fallback: start with 1 week, widen on retries.
+_TRENDING_HOURS_TIERS: list[int] = [168, 720, 2160]  # 1 week, 1 month, 3 months
 
 # The query string sent to the search provider (used for logging only — actual
 # prompt is built inside query_trending).
@@ -49,26 +50,39 @@ _MAX_BATCH_SIZE = 50
 # For batch runs, we need at least batch_size topics.
 _MIN_VALID_COUNT = 1
 
-# Keyword tags used for the binary relevance signal — superhero content focus.
+# Keyword tags used for the relevance signal — superhero/anime content focus.
+# These are used as a SOFT scoring boost, NOT a hard filter.
+# Topics from the LLM prompt are already niche-relevant; these tags just
+# give extra weight to topics that explicitly mention known franchises.
 _RELEVANCE_TAGS: list[str] = [
-    "marvel",
-    "dc",
-    "superhero",
-    "spider-man",
-    "batman",
-    "superman",
-    "avengers",
-    "thor",
-    "iron man",
-    "goku",
-    "naruto",
-    "anime",
-    "fight",
-    "vs",
-    "crossover",
-    "origin",
-    "power",
-    "villain",
+    # Broad categories (always relevant)
+    "marvel", "dc", "superhero", "anime", "manga", "comic",
+    "fight", "vs", "battle", "crossover", "power", "villain", "hero",
+    "origin", "ranking", "strongest", "weakest", "explained",
+    # Marvel
+    "avengers", "spider-man", "thor", "iron man", "hulk", "deadpool",
+    "wolverine", "fantastic four", "x-men", "doomsday", "secret wars",
+    "doom", "kang", "galactus", "thunderbolts", "midnight sons",
+    "magneto", "venom", "scarlet witch", "black panther", "captain america",
+    # DC
+    "batman", "superman", "flash", "aquaman", "wonder woman",
+    "justice league", "darkseid", "joker", "green lantern",
+    # Anime (current + classic)
+    "goku", "vegeta", "broly", "dragon ball", "super saiyan",
+    "naruto", "sasuke", "boruto", "madara", "itachi",
+    "luffy", "gear 5", "one piece", "zoro", "shanks",
+    "gojo", "sukuna", "jujutsu kaisen",
+    "saitama", "one punch man",
+    "solo leveling", "sung jinwoo",
+    "demon slayer", "muzan", "tanjiro",
+    "chainsaw man", "makima", "denji",
+    "bleach", "ichigo", "aizen",
+    "black clover", "asta",
+    "attack on titan", "eren",
+    "my hero academia", "deku", "all might",
+    "mob psycho", "hunter x hunter",
+    # Live-action/animated series
+    "homelander", "the boys", "invincible", "omni-man",
 ]
 
 # ---------------------------------------------------------------------------
@@ -199,15 +213,18 @@ class PerplexityMCPClient:
 
         # Build a prompt that asks for structured topic data
         prompt = (
-            "List 10 popular superhero video topics suitable for a YouTube channel. "
-            "Include topics about: Marvel, DC Comics, anime heroes (Dragon Ball, Naruto, One Piece), "
-            "superhero fights and power comparisons, character vs character battles, "
-            "origin stories, superhero movie/show analysis, comic book events, and hero rankings. "
-            "These can be evergreen popular topics, not necessarily trending today. "
+            "What are the 10 most TRENDING and CURRENT superhero/anime topics "
+            "that people are searching for and talking about RIGHT NOW this week? "
+            "Focus on: upcoming movies/shows being discussed (Avengers Doomsday, Fantastic Four, "
+            "Secret Wars, Thunderbolts, etc.), current anime hype (Jujutsu Kaisen, Solo Leveling, "
+            "One Piece, Dragon Ball Daima, Chainsaw Man, Demon Slayer, etc.), "
+            "viral character debates and power scaling discussions trending on social media, "
+            "new comic book events or reveals making news, "
+            "and any recent leaks/trailers/announcements generating buzz. "
+            "I want topics people are ACTUALLY searching for TODAY — not generic evergreen topics. "
             "Format: numbered list 1-10, one topic per line, short catchy title (5-10 words max). "
-            "Example topics: 'Thor vs Superman: Who Would Win', 'Goku vs Saitama Power Comparison', "
-            "'Black Panther Powers Explained', 'Spider-Man vs Batman Fight Analysis', "
-            "'Top 10 Strongest Marvel Heroes Ranked'. "
+            "Make titles click-worthy for YouTube like: 'Gojo vs Sukuna: Final Fight Explained', "
+            "'Avengers Doomsday: Every Confirmed Hero', 'Solo Leveling Season 2 Power Scaling'. "
             "Write every title entirely in English using standard Latin characters. "
             "Do not use Chinese, Japanese, Korean, Cyrillic, or any other non-Latin characters. "
             "Output ONLY the numbered list, no explanations, no disclaimers."
@@ -227,7 +244,13 @@ class PerplexityMCPClient:
                         "messages": [
                             {
                                 "role": "system",
-                                "content": "You are a research assistant that identifies trending AI topics.",
+                                "content": (
+                                    "You are a trending topic researcher specializing in superhero "
+                                    "and anime content. You identify what's CURRENTLY viral and "
+                                    "being discussed on YouTube, Reddit, Twitter/X, and TikTok "
+                                    "this week. You always prioritize fresh, timely topics over "
+                                    "generic evergreen ones."
+                                ),
                             },
                             {"role": "user", "content": prompt},
                         ],
@@ -379,7 +402,7 @@ class TavilyMCPClient:
             return self._get_placeholder_topics()
 
         # Map hours_back to Tavily's time_range enum (day/week/month/year).
-        # hours_back defaults to a wide 3-month window for evergreen content.
+        # hours_back defaults to 168 (1 week) for fresh trending content.
         if hours_back <= 24:
             time_range = "day"
         elif hours_back <= 24 * 7:
@@ -390,8 +413,9 @@ class TavilyMCPClient:
             time_range = "year"
 
         search_query = (
-            '"who would win" OR "vs" superhero battle Marvel DC anime power '
-            "comparison fight breakdown -trailer -review -merchandise -blu-ray"
+            "trending superhero anime topics this week 2026 "
+            "Marvel DC Jujutsu Kaisen Solo Leveling One Piece power scaling "
+            "vs battle debate viral -trailer -merchandise -blu-ray -unboxing"
         )
 
         try:
@@ -441,10 +465,9 @@ class TavilyMCPClient:
                     ]):
                         continue
 
-                    # Require the title to actually reference a hero/battle concept —
-                    # otherwise it's likely an unrelated news/merch/review page.
-                    if not any(tag in cleaned.lower() for tag in _RELEVANCE_TAGS):
-                        continue
+                    # Boost topics that reference known franchises, but don't
+                    # hard-reject others — new shows/characters may not be in our list.
+                    # The scoring stage handles relevance weighting later.
 
                     score = float(item.get("score", 0.5))
                     results.append(
@@ -561,21 +584,22 @@ def _min_max_normalize(values: list[float]) -> list[float]:
 
 
 def _compute_relevance(title: str) -> tuple[float, list[str]]:
-    """Return the binary relevance score and matched tags for *title*.
+    """Return the relevance score and matched tags for *title*.
 
-    Relevance is ``1.0`` if any :data:`_RELEVANCE_TAGS` string appears as a
-    case-insensitive substring of *title*, otherwise ``0.0``.
+    Scoring is SOFT — topics from the LLM prompt are already niche-relevant,
+    so unmatched topics still get a baseline score of 0.5. Matched topics get 1.0.
+    This ensures new characters/shows that aren't in our tag list still pass.
 
     Args:
         title: Topic title to test.
 
     Returns:
-        A ``(score, matched_tags)`` tuple where *score* is 0.0 or 1.0 and
+        A ``(score, matched_tags)`` tuple where *score* is 0.5 or 1.0 and
         *matched_tags* is the list of matching tag strings.
     """
     lower_title = title.lower()
     matched = [tag for tag in _RELEVANCE_TAGS if tag.lower() in lower_title]
-    score = 1.0 if matched else 0.0
+    score = 1.0 if matched else 0.5
     return score, matched
 
 
@@ -683,17 +707,20 @@ class Topic_Researcher:
         last_error: Exception | None = None
 
         for attempt in range(1, _MAX_ATTEMPTS + 1):
+            # Progressive fallback: widen time window on each retry
+            hours_back = _TRENDING_HOURS_TIERS[min(attempt - 1, len(_TRENDING_HOURS_TIERS) - 1)]
             logger.info(
-                "Topic_Researcher[%s]: query attempt %d/%d (run_id=%s)",
+                "Topic_Researcher[%s]: query attempt %d/%d (run_id=%s, hours_back=%d)",
                 self._provider,
                 attempt,
                 _MAX_ATTEMPTS,
                 run_id,
+                hours_back,
             )
             try:
                 raw_results = await self._client.query_trending(
                     query=_SEARCH_QUERY,
-                    hours_back=_TRENDING_HOURS_BACK,
+                    hours_back=hours_back,
                     excluded_titles=list(excluded_lower),
                 )
             except Exception as exc:  # noqa: BLE001
