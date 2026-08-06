@@ -377,6 +377,7 @@ class Orchestrator:
                 style_profile=style_profile,
                 video_id=video_id,
                 script_duration_minutes=self._config.script_duration_minutes,
+                script_style=self._config.script_style,
             ),
         )
 

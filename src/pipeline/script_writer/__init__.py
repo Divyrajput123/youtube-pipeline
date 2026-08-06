@@ -288,11 +288,128 @@ def _utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+def _get_style_instructions(script_style: str, body_segments: int) -> str:
+    """Return writing style instructions based on the channel's script_style config."""
+
+    if script_style == "kids_rhyming":
+        return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
+You are writing a FUN, MUSICAL children's video script with RHYMING narration.
+Every line should RHYME and have a bouncy, singable rhythm.
+
+RULES:
+- EVERY pair of lines MUST rhyme (AABB pattern)
+- Use simple words a 3-year-old can understand
+- Be repetitive — kids love repetition (repeat key phrases 2-3 times)
+- Include counting, colors, shapes, animals, or ABCs naturally
+- Make it SINGABLE — imagine a parent singing this to their child
+- Use onomatopoeia: "Splash! Boom! Whoosh! Pop!"
+- Keep sentences SHORT (5-8 words max)
+- Be warm, encouraging, and joyful — NEVER scary
+- Include action cues: "[clap] [jump] [spin around]"
+
+BAD: "The cat sat on the mat and looked around the room."
+GOOD: "The kitty cat goes meow meow meow! [pause] She jumps so high — oh WOW WOW WOW!"
+
+REQUIRED SCRIPT STRUCTURE:
+1. HOOK (catchy opening song/chant that repeats the title)
+
+2. BODY ({body_segments} verses — each a fun rhyming verse)
+   - Each verse teaches ONE simple concept
+   - Repeat the chorus/hook between verses
+   - Include interactive moments: "Can YOU count to three? 1... 2... 3!"
+
+3. CTA (gentle sing-along ending)
+   - "If you liked this song, give a thumbs up!"
+   - Repeat the main melody one final time"""
+
+    elif script_style == "educational":
+        return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
+You are an engaging educator making complex topics SIMPLE and FASCINATING.
+Think: Kurzgesagt meets Vsauce — curious, mind-blowing, accessible.
+
+RULES:
+- Start with a mind-blowing question or fact
+- Use analogies to explain complex concepts ("Imagine the sun is a basketball...")
+- Build from simple to complex — never assume prior knowledge
+- Create "aha!" moments throughout
+- Use conversational language — like explaining to a smart friend
+- Include real examples and thought experiments
+
+REQUIRED SCRIPT STRUCTURE:
+1. HOOK (mind-blowing question or counterintuitive fact)
+
+2. BODY ({body_segments} segments — each building on the previous)
+   - Each segment introduces one concept clearly
+   - Use analogies and real-world examples
+   - End each with a bridge to the next concept
+
+3. CTA (thought-provoking final question + subscribe)"""
+
+    elif script_style == "documentary":
+        return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
+You are narrating a prestige documentary — think David Attenborough or Ken Burns.
+Authoritative, measured, deeply researched, beautifully phrased.
+
+RULES:
+- Write with gravitas and authority
+- Use precise, evocative language
+- Build narratives around real events/facts
+- Maintain a steady, measured pace
+- Include historical context and broader significance
+- Let moments breathe — not everything needs to be fast
+
+REQUIRED SCRIPT STRUCTURE:
+1. HOOK (establish the setting and stakes with quiet intensity)
+
+2. BODY ({body_segments} segments — each a chapter in the story)
+   - Chronological or thematic progression
+   - Rich detail and context
+   - Human elements and emotional weight
+
+3. CTA (reflective closing thought + subscribe)"""
+
+    else:  # cinematic_storytelling (default)
+        return f"""STORYTELLING STYLE (THIS IS THE #1 PRIORITY — OVERRIDE EVERYTHING ELSE):
+You are a cinematic narrator telling an EPIC STORY — not explaining facts.
+Your script should feel like a movie, not a textbook. Every sentence should make
+the viewer feel something: awe, fear, excitement, curiosity.
+
+RULES FOR STORYTELLING:
+- NEVER say "Let's talk about..." or "In this video we'll explore..." — these are boring
+- NEVER list facts like a Wikipedia article
+- ALWAYS write in scenes: describe what's HAPPENING, not what something IS
+- Open EVERY segment by dropping the viewer into the middle of action
+- Use present tense for action scenes: "He raises his fist. The ground cracks."
+- Short sentences for impact. Then a longer sentence to let the rhythm breathe and build.
+- Create REVEALS and TWISTS: "But here's the thing nobody realizes..."
+- End every segment on a cliffhanger that forces the viewer to keep watching
+- Write like you're narrating a movie trailer combined with a fight commentary
+
+BAD (boring factual — NEVER DO THIS):
+"Superman has super strength and can fly at high speeds. He was born on Krypton and sent to Earth."
+
+GOOD (cinematic storytelling — ALWAYS DO THIS):
+"[pause] Picture this. A man floating above the clouds... fists clenched... cape tearing in the wind. Below him, an entire city holds its breath. Because the last time he hit something this hard... [emphasis]a mountain disappeared.[/emphasis]"
+
+REQUIRED SCRIPT STRUCTURE:
+Write a complete YouTube video script told as a STORY with these sections:
+
+1. HOOK (drop the viewer into a dramatic moment — mid-action, mid-crisis)
+
+2. BODY ({body_segments} segments — each told as a SCENE, not a lecture)
+   - Each segment is a new SCENE with rising stakes
+   - Show don't tell: "His fist connects. Shockwave levels six city blocks." NOT "He has super strength."
+   - Each segment ends with a twist or escalation
+
+3. CTA (dramatic closing statement + call-to-action)"""
+
+
 def _build_generation_prompt(
     topic: TopicEntry,
     style_profile: StyleProfile,
     min_words: int = _MIN_WORDS,
     max_words: int = _MAX_WORDS,
+    script_style: str = "cinematic_storytelling",
 ) -> str:
     """Construct the Claude generation prompt for a new script.
 
@@ -339,44 +456,7 @@ CHANNEL STYLE:
 
 VIDEO TOPIC: {topic.title}
 
-STORYTELLING STYLE (THIS IS THE #1 PRIORITY — OVERRIDE EVERYTHING ELSE):
-You are a cinematic narrator telling an EPIC STORY — not explaining facts.
-Your script should feel like a movie, not a textbook. Every sentence should make
-the viewer feel something: awe, fear, excitement, curiosity.
-
-RULES FOR STORYTELLING:
-- NEVER say "Let's talk about..." or "In this video we'll explore..." — these are boring
-- NEVER list facts like a Wikipedia article
-- ALWAYS write in scenes: describe what's HAPPENING, not what something IS
-- Open EVERY segment by dropping the viewer into the middle of action
-- Use present tense for action scenes: "He raises his fist. The ground cracks."
-- Short sentences for impact. Then a longer sentence to let the rhythm breathe and build.
-- Create REVEALS and TWISTS: "But here's the thing nobody realizes..."
-- End every segment on a cliffhanger that forces the viewer to keep watching
-- Write like you're narrating a movie trailer combined with a fight commentary
-
-BAD (boring factual — NEVER DO THIS):
-"Superman has super strength and can fly at high speeds. He was born on Krypton and sent to Earth. His powers include heat vision, freeze breath, and invulnerability."
-
-GOOD (cinematic storytelling — ALWAYS DO THIS):
-"[pause] Picture this. A man floating above the clouds... fists clenched... cape tearing in the wind. Below him, an entire city holds its breath. Because the last time he hit something this hard... [emphasis]a mountain disappeared.[/emphasis] Born on a dying world, launched into the stars as an infant, he crash-landed on a planet where the sun itself makes him a god. Every photon that touches his skin becomes pure, unstoppable power."
-
-REQUIRED SCRIPT STRUCTURE:
-Write a complete YouTube video script told as a STORY with these sections:
-
-1. HOOK (≤ {_HOOK_MAX_WORDS} words / ≤ {_HOOK_MAX_SECONDS} seconds at {_WPM} WPM)
-   - Drop the viewer into a dramatic moment — mid-action, mid-crisis
-   - Pose the central question as a life-or-death stakes scenario
-
-2. BODY ({body_segments} segments — each told as a SCENE, not a lecture)
-   - Each segment is a new SCENE in the story with rising stakes
-   - Describe powers/abilities through ACTION, not description
-   - Show don't tell: "His fist connects. Shockwave levels six city blocks." NOT "He has super strength."
-   - Each segment ends with a twist or escalation that pulls into the next
-
-3. CTA (≤ {_CTA_MAX_WORDS} words / ≤ {_CTA_MAX_SECONDS} seconds at {_WPM} WPM)
-   - Wrap the story with a final dramatic statement
-   - Then transition to call-to-action naturally
+{_get_style_instructions(script_style, body_segments)}
 
 ANNOTATION REQUIREMENTS (MANDATORY):
 - Add AT LEAST ONE speaker-direction annotation per section/segment using these tags:
@@ -506,6 +586,7 @@ class Script_Writer:
         style_profile: StyleProfile,
         video_id: str,
         script_duration_minutes: Optional[float] = None,
+        script_style: str = "cinematic_storytelling",
     ) -> Script:
         """Generate a new script for *topic* styled after *style_profile*.
 
@@ -563,7 +644,7 @@ class Script_Writer:
             min_words = _MIN_WORDS
             max_words = _MAX_WORDS
 
-        prompt = _build_generation_prompt(topic, style_profile, min_words, max_words)
+        prompt = _build_generation_prompt(topic, style_profile, min_words, max_words, script_style)
 
         # ---- 3. Call Claude with retry -------------------------------------
         content = await self._call_claude_with_retry(prompt, video_id=video_id)

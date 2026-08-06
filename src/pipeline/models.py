@@ -443,6 +443,10 @@ class PipelineConfig(BaseModel):
     visual_video_provider: Literal["kling", "runpod"] = "kling"
     style_profile_cache_days: int = Field(..., ge=0)
     script_duration_minutes: float = Field(default=1.0, gt=0, le=30)
+    script_style: str = Field(
+        default="cinematic_storytelling",
+        description="Writing style for scripts: cinematic_storytelling, kids_rhyming, educational, documentary",
+    )
 
     # Weekly schedule settings — used when batch_size=7
     # Videos publish Mon-Sun at this time (local time, converted to UTC)

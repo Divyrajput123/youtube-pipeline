@@ -66,6 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to the JSON pipeline configuration file.",
     )
     parser.add_argument(
+        "--env-file",
+        metavar="PATH",
+        default=None,
+        help="Path to a custom .env file (for multi-channel support). Overrides the default .env.",
+    )
+    parser.add_argument(
         "--batch-size",
         metavar="N",
         type=int,
@@ -144,6 +150,16 @@ def _validate_batch_size(n: int) -> None:
 
 async def _run(args: argparse.Namespace) -> None:
     """Async core: start review webhook server, build orchestrator, run pipeline."""
+    # Load custom .env file if specified (for multi-channel support)
+    if args.env_file:
+        from dotenv import load_dotenv  # noqa: PLC0415
+        env_path = Path(args.env_file)
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=True)
+            print(f"Loaded custom environment from {env_path}")
+        else:
+            print(f"Warning: --env-file {args.env_file} not found", file=sys.stderr)
+
     from pipeline.factory import build_orchestrator  # noqa: PLC0415
     from pipeline.review_server import start_review_server  # noqa: PLC0415
     from pipeline.tunnel import start_tunnel, stop_tunnel  # noqa: PLC0415
