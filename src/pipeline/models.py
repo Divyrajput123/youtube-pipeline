@@ -441,6 +441,7 @@ class PipelineConfig(BaseModel):
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
     visual_video_provider: Literal["kling", "runpod"] = "kling"
+    narration_provider: Literal["elevenlabs", "google_tts"] = "elevenlabs"
     style_profile_cache_days: int = Field(..., ge=0)
     script_duration_minutes: float = Field(default=1.0, gt=0, le=30)
     script_style: str = Field(

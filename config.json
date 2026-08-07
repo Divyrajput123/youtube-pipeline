@@ -7,6 +7,7 @@
   "topic_research_provider": "perplexity",
   "_visual_video_provider_note": "Choose 'kling' for the Kling API or 'runpod' for your LTX-Video RunPod server.",
   "visual_video_provider": "runpod",
+  "narration_provider": "elevenlabs",
   "style_profile_cache_days": 7,
 
   "_script_duration_note": "Target script duration in minutes. Word counts are derived at 150 WPM. e.g. 1 min = ~150 words, 3 min = ~450 words, 5 min = ~750 words, 10 min = ~1500 words.",

@@ -2,14 +2,15 @@
   "_channel_note": "Kids Rhyming Channel — nursery rhymes, counting songs, ABC, bedtime stories. Separate YouTube channel, Notion DB, and Instagram account.",
   "reference_channel_url": "https://www.youtube.com/@CoComelon",
 
-  "_voice_note": "Use Google Cloud TTS with warm female voice (en-US-Chirp3-HD-Aoede). ElevenLabs voice_id is a fallback — pick a child-friendly female voice if using ElevenLabs.",
-  "voice_id": "EXAVITQu4vr4xnSDxMaL",
+  "_voice_note": "Gigi — child-like, playful ElevenLabs voice (jBpfuIE2acCO8z3wKNLl). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
+  "voice_id": "jBpfuIE2acCO8z3wKNLl",
   "topic_research_provider": "perplexity",
   "visual_video_provider": "runpod",
+  "narration_provider": "elevenlabs",
   "style_profile_cache_days": 7,
 
   "_script_duration_note": "Kids videos are shorter — 1-2 minutes. At 150 WPM: 1 min = ~150 words, 2 min = ~300 words.",
-  "script_duration_minutes": 2,
+  "script_duration_minutes": 3,
 
   "_script_style_note": "Writing style: kids_rhyming produces singable rhyming scripts for children",
   "script_style": "kids_rhyming",
