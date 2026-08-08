@@ -1090,6 +1090,79 @@ async def _generate_character_descriptions(script_topic: str, script_body: str) 
         }
 
 
+async def _generate_kids_t2va_brief(
+    segment: _Segment,
+    clip_idx: int,
+    total_clips: int,
+    script_topic: str = "",
+) -> str:
+    """Convert a kids rhyming verse into an H3 T2VA brief with 3D animation style.
+
+    The brief uses a cheerful off-screen narrator voiceover format so H3
+    generates the singing/narration voice without trying to animate character
+    mouth movements (which would look wrong on animals/characters mid-action).
+
+    Args:
+        segment: The verse segment from the rhyming script.
+        clip_idx: Zero-based clip index (for scene progression).
+        total_clips: Total number of clips in the video.
+        script_topic: Overall video topic for context.
+
+    Returns:
+        Full T2VA production brief string.
+    """
+    import re as _re  # noqa: PLC0415
+
+    title = segment.title.strip()
+    body = segment.body.strip()
+
+    # Strip annotation tags like [clap], [jump] from the body for visual desc
+    # but keep them in the dialogue for timing cues
+    visual_body = _re.sub(r"\[/?[a-zA-Z\s]+\]", "", body).strip()
+
+    # Scene progression — environment gets more vibrant as song builds
+    progress = clip_idx / max(1, total_clips - 1)
+    if progress < 0.25:
+        scene_energy = "gentle opening, calm and inviting"
+        time_of_day = "bright sunny morning"
+    elif progress < 0.6:
+        scene_energy = "playful and energetic, full of movement"
+        time_of_day = "cheerful midday"
+    elif progress < 0.85:
+        scene_energy = "exciting and joyful, peak energy"
+        time_of_day = "golden afternoon light"
+    else:
+        scene_energy = "warm and satisfying, winding down"
+        time_of_day = "cozy warm sunset"
+
+    camera_moves = [
+        "the camera slowly pushes in with small amplitude",
+        "the camera gently pulls out with small amplitude",
+        "the camera holds a static warm wide shot",
+        "the camera slowly pans right at slow speed",
+        "the camera gently tilts up at slow speed",
+        "the camera arcs around the scene at slow speed",
+    ]
+    camera = camera_moves[clip_idx % len(camera_moves)]
+
+    # Extract the singable lines from the verse for the voiceover dialogue
+    # Take first 3-4 lines of the body as the sung content
+    lines = [l.strip() for l in body.split("\n") if l.strip()][:4]
+    sung_lines = " ".join(lines)[:300]
+
+    # Build the brief
+    brief = f"""integrated_multimodal_description: [Shot 1] Bright cheerful 3D animated style, Pixar-quality rendering, vivid saturated colors, {time_of_day}, {scene_energy}. {visual_body[:200] if visual_body else f"A warm colorful scene related to {script_topic}"}. {camera} as the scene unfolds warmly. A warm friendly narrator voice, clear and melodic, speaking in a bouncy sing-song rhythm (S1) says in an off-screen voiceover: <d>[English] {sung_lines}</d> S1's lips remain completely closed throughout. The characters and animals react with big happy expressions and gentle movements in sync with the song. The scene is full of bright colors, sparkles, and gentle motion.
+
+overall_soundscape: Cheerful ambient sounds matching the scene — gentle breeze, birds singing, leaves rustling, soft footsteps, happy animal sounds. Everything is warm, safe, and joyful with no sudden loud noises.
+
+non_diegetic_music: Light xylophone melody at a bouncy moderate tempo, ukulele chords, gentle hand percussion on every beat, bright major key, cheerful and singable throughout the entire clip."""
+
+    logger.info(
+        "Kids T2VA brief clip %d/%d: %s", clip_idx + 1, total_clips, brief[:80]
+    )
+    return brief
+
+
 async def _generate_cinematic_t2va_brief(
     segment: _Segment,
     clip_num: int,
@@ -2097,8 +2170,8 @@ class Visual_Generator:
         # Narration mode: split each segment into clips of CLIP_DURATION each.
         _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
         per_clip_durations: list[float] = []
-        if self._visual_prompt_mode == "cinematic":
-            # One clip per scene — use the provider's native clip duration
+        if self._visual_prompt_mode in ("cinematic", "kids_rhyming"):
+            # One clip per scene/verse — use the provider's native clip duration
             per_clip_durations = [_CLIP_DUR] * len(segments)
         else:
             _CUT_EVERY_S: float = _CLIP_DUR
@@ -2198,6 +2271,12 @@ class Visual_Generator:
         """
         if visual_prompt_mode == "cinematic":
             return await self._generate_clips_cinematic(
+                segments=segments,
+                video_id=video_id,
+                script_topic=script_topic,
+            )
+        if visual_prompt_mode == "kids_rhyming":
+            return await self._generate_clips_kids(
                 segments=segments,
                 video_id=video_id,
                 script_topic=script_topic,
@@ -2326,6 +2405,94 @@ class Visual_Generator:
                         "— clip %d will use T2V mode",
                         clip_idx + 1, clip_idx + 2,
                     )
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Narration clip generation — multiple clips per segment by duration
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Kids rhyming clip generation — one clip per verse, 3D animation style
+    # ------------------------------------------------------------------
+
+    async def _generate_clips_kids(
+        self,
+        segments: list[_Segment],
+        video_id: str,
+        script_topic: str = "",
+    ) -> list[ClipResult]:
+        """Generate one 15s clip per rhyming verse using bright 3D animation style.
+
+        Rules:
+        - 1 clip per ## segment (verse/chorus/hook)
+        - Always serial — single ComfyUI pod
+        - T2VA brief uses cheerful 3D animation style and narrator voiceover format
+        - Last-frame chaining for environment continuity between verses
+        - H3 native audio kept — no external TTS
+        """
+        total_clips = len(segments)
+        logger.info(
+            "Visual_Generator [kids_rhyming]: generating %d clips (1 per verse, serial)",
+            total_clips,
+        )
+
+        # Build T2VA prompts for each verse
+        prompts: list[str] = []
+        for clip_idx, segment in enumerate(segments):
+            prompt = await _generate_kids_t2va_brief(
+                segment=segment,
+                clip_idx=clip_idx,
+                total_clips=total_clips,
+                script_topic=script_topic,
+            )
+            prompts.append(prompt)
+
+        # Generate clips serially with last-frame chaining
+        results: list[ClipResult] = []
+        last_frame_filename: Optional[str] = None
+
+        _pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
+        _comfyui_url = f"https://{_pod_id}-8188.proxy.runpod.net" if _pod_id else ""
+
+        for clip_idx, (segment, prompt) in enumerate(zip(segments, prompts)):
+            logger.info(
+                "Visual_Generator [kids_rhyming]: clip %d/%d — %s%s",
+                clip_idx + 1, total_clips, segment.title[:50],
+                f" [chaining from clip {clip_idx}]" if last_frame_filename else " [first clip]",
+            )
+
+            if hasattr(self._viewmax, "_call_minimax_h3"):
+                self._viewmax._next_first_frame = last_frame_filename
+            else:
+                self._viewmax._next_first_frame = None
+
+            result = await self._generate_single_clip(
+                segment_index=clip_idx,
+                segment=segment,
+                prompt=prompt,
+                video_id=video_id,
+                seed=-1,
+            )
+            results.append(result)
+
+            # Chain last frame to next clip for environment continuity
+            last_frame_filename = None
+            if (
+                not result.is_fallback
+                and len(result.mp4_bytes) > 10_000
+                and _comfyui_url
+                and clip_idx < total_clips - 1
+            ):
+                frame_jpeg = await self._viewmax._extract_last_frame(result.mp4_bytes)
+                if frame_jpeg:
+                    stored_name = await self._viewmax._upload_frame_to_comfyui(
+                        frame_jpeg,
+                        _comfyui_url,
+                        filename=f"kids_chain_{clip_idx:02d}.jpg",
+                    )
+                    if stored_name:
+                        last_frame_filename = stored_name
 
         return results
 
@@ -2664,7 +2831,7 @@ class Visual_Generator:
         #   narration: download TTS MP3 and mux as the single audio track
         #   cinematic:  keep H3 native audio from each clip; concat with video
         # ---------------------------------------------------------------------------
-        cinematic_mode = self._visual_prompt_mode == "cinematic"
+        cinematic_mode = self._visual_prompt_mode in ("cinematic", "kids_rhyming")
 
         local_mp3_path: Optional[Path] = None
         if not cinematic_mode:

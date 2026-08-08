@@ -540,7 +540,7 @@ class Orchestrator:
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 
         narration: Optional[NarrationAsset] = None
-        if self._config.visual_prompt_mode != "cinematic":
+        if self._config.visual_prompt_mode not in ("cinematic", "kids_rhyming"):
             narration = await self._run_stage(
                 stage_name="narration_generator",
                 video_id=video_id,
@@ -1110,8 +1110,8 @@ class Orchestrator:
         if resume_from in {"narration_generator", "visual_generator",
                            "metadata_generator", "publisher"}:
             if resume_from == "narration_generator":
-                # Skip TTS in cinematic mode — no MP3 is generated or stored
-                if self._config.visual_prompt_mode == "cinematic":
+                # Skip TTS in cinematic/kids_rhyming mode — no MP3 is generated or stored
+                if self._config.visual_prompt_mode in ("cinematic", "kids_rhyming"):
                     logger.info(
                         "resume_pipeline: cinematic mode — skipping TTS narration for video_id=%s",
                         video_id,
@@ -1140,8 +1140,8 @@ class Orchestrator:
                         except Exception as exc:  # noqa: BLE001
                             logger.warning("resume: could not update narration_url for %s: %s", video_id, exc)
             else:
-                # Resuming from a later stage — reconstruct or None for cinematic
-                if self._config.visual_prompt_mode == "cinematic":
+                # Resuming from a later stage — reconstruct or None for cinematic/kids_rhyming
+                if self._config.visual_prompt_mode in ("cinematic", "kids_rhyming"):
                     narration = None  # type: ignore[assignment]
                 else:
                     assert narration_bytes is not None
@@ -1762,9 +1762,9 @@ class Orchestrator:
         # Advance past gate (batch mode: gates do not block generation).
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 
-        # Stage: Narration_Generator (skipped in cinematic mode)
+        # Stage: Narration_Generator (skipped in cinematic/kids_rhyming mode)
         narration: Optional[NarrationAsset] = None
-        if self._config.visual_prompt_mode != "cinematic":
+        if self._config.visual_prompt_mode not in ("cinematic", "kids_rhyming"):
             narration = await self._run_stage(
                 stage_name="narration_generator",
                 video_id=video_id,

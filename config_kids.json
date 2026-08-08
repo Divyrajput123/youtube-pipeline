@@ -6,8 +6,8 @@
   "voice_id": "jBpfuIE2acCO8z3wKNLl",
   "topic_research_provider": "perplexity",
   "visual_video_provider": "minimax_h3",
-  "_visual_prompt_mode_note": "cinematic = H3 native voice + animation (no TTS). narration = TTS voice + visuals.",
-  "visual_prompt_mode": "cinematic",
+  "_visual_prompt_mode_note": "kids_rhyming = H3 native voice + 3D animation style (no TTS, bright cheerful visuals). cinematic = action/fight scene style. narration = TTS voice + cinematic b-roll.",
+  "visual_prompt_mode": "kids_rhyming",
   "narration_provider": "elevenlabs",
   "style_profile_cache_days": 7,
 
