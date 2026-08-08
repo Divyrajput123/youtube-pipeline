@@ -78,7 +78,11 @@ _THUMBNAIL_MAX_BYTES: int = 2 * 1024 * 1024  # 2 MB
 _FFMPEG_FRAMERATE: int = 24
 _FFMPEG_RESOLUTION: str = "1920x1080"
 _FALLBACK_CLIP_DURATION_S: int = 3  # seconds for a still-image fallback clip
-_CLIP_DEFAULT_DURATION_S: int = 5   # seconds requested from Viewmax per clip
+# NOTE: Do NOT add a _CLIP_DEFAULT_DURATION_S constant here.
+# Clip duration is always read from ViewmaxMCPClient.CLIP_DURATION so there
+# is exactly one source of truth per provider (kling=5, minimax_h3=15).
+# Using a module-level constant causes silent duration mismatches when the
+# provider is switched — the constant gets stale while CLIP_DURATION is updated.
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -302,7 +306,15 @@ class ViewmaxMCPClient:
             if not self._h3_pod_id and not (self._h3_endpoint_id and self._h3_api_key):
                 return _generate_placeholder_clip_jpeg(prompt)
             try:
-                return await self._call_minimax_h3(prompt, duration_seconds=duration_seconds, seed=seed)
+                # Pick up any first_frame set by _generate_clips_cinematic for chaining
+                _first_frame = getattr(self, "_next_first_frame", None)
+                self._next_first_frame = None  # consume it so it doesn't leak to next call
+                return await self._call_minimax_h3(
+                    prompt,
+                    duration_seconds=duration_seconds,
+                    seed=seed,
+                    first_frame_filename=_first_frame,
+                )
             except Exception as exc:
                 logger.warning(
                     "ViewmaxMCPClient: MiniMax H3 failed ('%s'): %s — using placeholder.",
@@ -388,19 +400,136 @@ class ViewmaxMCPClient:
 
         raise RuntimeError(f"Kling task {task_id} timed out after 10 minutes")
 
-    async def _call_minimax_h3(self, prompt: str, duration_seconds: int = 10, seed: int = -1) -> bytes:
+    async def _extract_last_frame(self, mp4_bytes: bytes) -> Optional[bytes]:
+        """Extract the last frame of an MP4 clip as JPEG bytes using ffmpeg.
+
+        Uses the second-to-last second rather than the very last frame to avoid
+        motion blur or partial frames that could confuse H3's first_frame anchor.
+
+        Args:
+            mp4_bytes: Raw MP4 bytes of the generated clip.
+
+        Returns:
+            JPEG bytes of the extracted frame, or None if extraction fails.
+        """
+        import shutil as _sh  # noqa: PLC0415
+        import subprocess as _sp  # noqa: PLC0415
+        import tempfile as _tf  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        ffmpeg_bin = _sh.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg" or "ffmpeg"
+        ffprobe_bin = _sh.which("ffprobe") or "/opt/homebrew/bin/ffprobe" or "ffprobe"
+
+        try:
+            with _tf.TemporaryDirectory() as tmpdir:
+                tmp = _Path(tmpdir)
+                clip_path = tmp / "clip.mp4"
+                frame_path = tmp / "frame.jpg"
+                clip_path.write_bytes(mp4_bytes)
+
+                # Get clip duration
+                probe = _sp.run(
+                    [ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", str(clip_path)],
+                    capture_output=True, timeout=15,
+                )
+                duration = float(probe.stdout.strip()) if probe.returncode == 0 else 15.0
+
+                # Extract frame at 80% duration — well into the action but before final blur
+                seek_time = max(0.0, duration * 0.80)
+
+                result = _sp.run(
+                    [ffmpeg_bin, "-y",
+                     "-ss", f"{seek_time:.3f}",
+                     "-i", str(clip_path),
+                     "-frames:v", "1",
+                     "-q:v", "2",
+                     str(frame_path)],
+                    capture_output=True, timeout=30,
+                )
+
+                if result.returncode != 0 or not frame_path.exists():
+                    logger.warning(
+                        "ViewmaxMCPClient: last-frame extraction failed: %s",
+                        result.stderr[-200:].decode("utf-8", errors="replace"),
+                    )
+                    return None
+
+                frame_bytes = frame_path.read_bytes()
+                logger.info(
+                    "ViewmaxMCPClient: extracted last frame at %.1fs (%d bytes JPEG)",
+                    seek_time, len(frame_bytes),
+                )
+                return frame_bytes
+
+        except Exception as exc:
+            logger.warning("ViewmaxMCPClient: last-frame extraction error: %s", exc)
+            return None
+
+    async def _upload_frame_to_comfyui(
+        self,
+        frame_jpeg_bytes: bytes,
+        comfyui_url: str,
+        filename: str = "last_frame.jpg",
+    ) -> Optional[str]:
+        """Upload a JPEG frame to ComfyUI's /upload/image endpoint.
+
+        ComfyUI stores uploaded images in its input folder and returns the
+        actual filename (may be deduplicated). That filename is what the
+        workflow JSON must reference.
+
+        Args:
+            frame_jpeg_bytes: Raw JPEG bytes to upload.
+            comfyui_url: Base ComfyUI URL.
+            filename: Suggested filename (ComfyUI may rename it).
+
+        Returns:
+            The filename as stored by ComfyUI (use in workflow JSON), or None on failure.
+        """
+        import httpx  # noqa: PLC0415
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{comfyui_url}/upload/image",
+                    files={"image": (filename, frame_jpeg_bytes, "image/jpeg")},
+                    data={"type": "input", "overwrite": "true"},
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "ViewmaxMCPClient: frame upload failed (HTTP %d): %s",
+                        resp.status_code, resp.text[:200],
+                    )
+                    return None
+
+                data = resp.json()
+                stored_name = data.get("name", filename)
+                subfolder = data.get("subfolder", "")
+                logger.info(
+                    "ViewmaxMCPClient: uploaded last frame as '%s' (subfolder='%s')",
+                    stored_name, subfolder,
+                )
+                return stored_name
+
+        except Exception as exc:
+            logger.warning("ViewmaxMCPClient: frame upload error: %s", exc)
+            return None
+
+    async def _call_minimax_h3(self, prompt: str, duration_seconds: int = 10, seed: int = -1, first_frame_filename: Optional[str] = None) -> bytes:
         """Generate video via MiniMax H3 on a ComfyUI Pod.
 
         Submits the exact ComfyUI workflow (API format) to the ComfyUI HTTP API,
         waits for completion, and downloads the generated MP4.
 
-        The Pod URL is derived from RUNPOD_H3_POD_ID:
-            https://{pod_id}-8188.proxy.runpod.net
-
         Args:
             prompt: Scene description for video generation.
             duration_seconds: Clip duration (5-15 seconds, default 10).
             seed: Random seed (-1 for random).
+            first_frame_filename: Optional filename of a JPEG previously uploaded
+                to ComfyUI's input folder via _upload_frame_to_comfyui. When set,
+                the workflow uses MiniMaxH3ImageToVideo's first_frame input so the
+                generated clip visually continues from that frame (last-frame chaining).
+                When None, T2V mode is used (no visual anchor).
 
         Returns:
             MP4 bytes of the generated video clip.
@@ -410,15 +539,18 @@ class ViewmaxMCPClient:
         import httpx  # noqa: PLC0415
         import random as _random  # noqa: PLC0415
 
-        clean_prompt = self._clean_prompt(prompt)
+        # Pass is_cinematic=True so _clean_prompt uses the dialogue-safe path
+        # regardless of whether the T2VA brief header is present (e.g. parse fallback).
+        clean_prompt = self._clean_prompt(prompt, is_cinematic=self._provider == "minimax_h3")
         duration = max(5, min(15, duration_seconds))
 
         if seed < 0:
             seed = _random.randint(0, 2**53 - 1)
 
         logger.info(
-            "ViewmaxMCPClient: MiniMax H3 (ComfyUI) generating '%s' duration=%ds seed=%d",
+            "ViewmaxMCPClient: MiniMax H3 (ComfyUI) generating '%s' duration=%ds seed=%d%s",
             clean_prompt[:80], duration, seed,
+            f" [chaining from '{first_frame_filename}']" if first_frame_filename else " [T2V mode]",
         )
 
         # Build ComfyUI Pod URL from pod ID
@@ -550,7 +682,8 @@ class ViewmaxMCPClient:
                     "height": ["115", 1],
                     "length": length,
                     "clip": ["105:13", 0],
-                    "vae": ["105:11", 0]
+                    "vae": ["105:11", 0],
+                    **({"first_frame": [first_frame_filename, 0]} if first_frame_filename else {}),
                 },
                 "class_type": "MiniMaxH3ImageToVideo"
             }
@@ -591,9 +724,12 @@ class ViewmaxMCPClient:
             prompt_id = result["prompt_id"]
             logger.info("ViewmaxMCPClient: H3 ComfyUI prompt queued: %s", prompt_id)
 
-        # Poll /history until the prompt is done (max 15 minutes for long clips)
+        # Poll /history until the prompt is done.
+        # With serial generation (_MAX_CONCURRENT=1) each clip is processed
+        # one at a time, so 15 min per clip is sufficient.
+        # Give 30 min to be safe for large 15s clips on slower GPUs.
         async with httpx.AsyncClient(timeout=60.0) as client:
-            for attempt in range(90):  # 90 * 10s = 15 min
+            for attempt in range(180):  # 180 * 10s = 30 min
                 await asyncio.sleep(10)
 
                 try:
@@ -662,10 +798,10 @@ class ViewmaxMCPClient:
                         attempt + 1, exc,
                     )
 
-        raise RuntimeError(f"H3 ComfyUI prompt {prompt_id} timed out after 15 minutes")
+        raise RuntimeError(f"H3 ComfyUI prompt {prompt_id} timed out after 30 minutes")
 
     @staticmethod
-    def _clean_prompt(raw_prompt: str) -> str:
+    def _clean_prompt(raw_prompt: str, is_cinematic: bool = False) -> str:
         """Clean the prompt before sending to the video provider.
 
         For MiniMax H3 T2VA briefs the prompt contains structured fields
@@ -674,17 +810,25 @@ class ViewmaxMCPClient:
         model parses for lipsync.  We must NOT strip [Language] tags from
         inside <d>…</d> blocks, or H3 will ignore the dialogue entirely.
 
+        Args:
+            raw_prompt: The raw prompt string.
+            is_cinematic: True when called in cinematic mode — uses the
+                dialogue-safe cleaning path regardless of prompt content.
+                Avoids fragile content-sniffing when the T2VA brief is
+                partially formed (e.g. BEAT parse fallback).
+
         Safe cleanup:
           - Strip pipeline annotation tags like [pause] / [emphasis] that
             appear OUTSIDE <d> blocks.
           - Collapse multiple spaces.
-          - For H3 T2VA briefs (detected by "integrated_multimodal_description"
-            in the prompt) skip truncation — the full brief is required.
+          - For H3 T2VA briefs skip truncation — the full brief is required.
           - For all other providers truncate to 350 chars.
         """
         import re as _re  # noqa: PLC0415
 
-        is_h3_brief = "integrated_multimodal_description" in raw_prompt
+        # Use is_cinematic as the authoritative signal; fall back to content
+        # sniffing only when the flag is not set (backwards compat for tests).
+        is_h3_brief = is_cinematic or ("integrated_multimodal_description" in raw_prompt)
 
         if is_h3_brief:
             # Only strip [pause]/[emphasis]-style tags that are NOT inside <d> tags.
@@ -995,6 +1139,16 @@ async def _generate_cinematic_t2va_brief(
             "Cinematic brief clip %d/%d: unrecognized BEAT type %r — "
             "falling back to action brief (no dialogue will be generated)",
             clip_num + 1, total_clips, beat_type,
+        )
+
+    # If BEAT is completely absent AND no ACTION text was written either,
+    # the segment is unparseable — raise rather than silently produce a
+    # brief with no meaningful content that H3 will render as mute action.
+    if beat_type == "" and not action_desc and not line1:
+        raise ValueError(
+            f"Unreadable cinematic segment '{title}': BEAT field missing or "
+            f"unparseable and no ACTION/LINE1 fallback available. "
+            f"Segment body: {body[:200]!r}"
         )
 
     # Scene slug from title (e.g. "SCENE 3 — EXT. ROOFTOP - DUSK")
@@ -1524,33 +1678,34 @@ async def _generate_ai_thumbnail(
     try:
         client = build_claude_client()
 
-        meta_prompt = f"""You are a YouTube thumbnail designer who creates prompts for AI image generators (Ideogram/DALL-E/Flux).
+        meta_prompt = f"""You are a YouTube thumbnail designer who creates prompts for AI image generators (Ideogram).
 
 VIDEO TITLE: {title}
-SCRIPT CONTENT (first 800 chars):
-{script_body[:800]}
+FULL SCRIPT:
+{script_body}
 
-Generate a SINGLE detailed image generation prompt for a 1280×720 YouTube thumbnail that will maximize CTR (click-through rate). 
+Generate a SINGLE detailed image generation prompt for a 1280×720 YouTube thumbnail that will maximize CTR (click-through rate).
 
 REQUIREMENTS:
-1. DESCRIBE THE ACTUAL CHARACTERS from the script by their appearance (costume, colors, powers, body type) — NEVER use character names like "Superman" or "Goku"
-2. Specify exact COMPOSITION: which characters are on left vs right, what % of frame they fill, camera angle
-3. Include DRAMATIC LIGHTING specific to the scene (not always "orange and blue" — match the mood)
-4. Specify the BACKGROUND that matches the script's setting (multiverse portals, destroyed city, cosmic space, etc.)
-5. Add TEXT INSTRUCTIONS: specify 1-2 lines of bold clickbait text, where it goes, and how it should look (large, outlined, glowing)
-6. Mention: full-bleed edge-to-edge, no borders, no white space, characters filling 85-90% of frame
-7. Designed for MOBILE visibility (large faces, high contrast, readable at small sizes)
-8. Style: photorealistic, cinematic, NOT cartoon, NOT anime, Hollywood movie poster quality
+1. DESCRIBE THE ACTUAL CHARACTERS from the script by their appearance (costume, colors, powers, body type) — NEVER use copyrighted character names
+2. COMPOSITION: characters on left and right sides, facing each other, filling 80-90% of frame, low-angle or eye-level dramatic perspective
+3. STYLE: Match the content — for anime/manga/superhero topics use high-quality anime key visual style (like Jujutsu Kaisen, Demon Slayer, Attack on Titan). For live-action topics use cinematic photorealistic style. NEVER generic.
+4. BACKGROUND: Destroyed/dramatic environment matching the script (ruined shrine, destroyed city, space, etc.), NOT plain gradients
+5. LIGHTING: Dramatic rim lighting, energy glow from characters illuminating the scene, deep shadows, high contrast
+6. ENERGY EFFECTS: Glowing auras, energy blasts, particle effects, sparks, motion blur — make it feel explosive
+7. TEXT: Specify large bold ALL-CAPS text in the upper portion of the image that does NOT cover character faces:
+   - Main text (huge, white with thick dark outline): a 2-4 word punchy question or statement from the video topic
+   - Sub-text (smaller, red or yellow): a 2-4 word hook
+8. Full-bleed edge-to-edge, no borders, no watermarks, no logos, designed for mobile visibility
 
 TEXT RULES:
-- Line 1: 2-4 word SHOCKING statement (ALL CAPS, e.g. "DOOM IS HERE!", "HE'S BACK!", "THEY LOSE!")  
-- Line 2: 2-4 word hook underneath (e.g. "Everything Changes", "Nobody Expected This")
-- Text must be EXTREMELY large, thick, with dark outline and cinematic glow
-- Place text where it won't cover character faces
+- Derive the text from the actual VIDEO TITLE — make it feel like a direct teaser for this specific video
+- Text must be EXTREMELY large, Impact-font style, bold, with thick dark outline and slight glow
+- Upper-left or upper area placement so character faces are visible
 
-Output ONLY the image generation prompt (250-400 words). No explanations, no markdown."""
+Output ONLY the image generation prompt (300-450 words). No explanations, no markdown."""
 
-        result = await client.complete(meta_prompt, max_tokens=600)
+        result = await client.complete(meta_prompt, max_tokens=800)
         image_prompt = result.strip().strip('"\'')
         logger.info("Claude thumbnail prompt generated: %s", image_prompt[:120])
 
@@ -1573,6 +1728,11 @@ Output ONLY the image generation prompt (250-400 words). No explanations, no mar
 
     # Try Ideogram first (best quality, supports text rendering)
     ideogram_key = os.environ.get("IDEOGRAM_API_KEY", "")
+    if not ideogram_key:
+        logger.warning(
+            "IDEOGRAM_API_KEY not set — falling back to Pollinations for thumbnail. "
+            "Add IDEOGRAM_API_KEY to GitHub Secrets for better quality thumbnails."
+        )
     if ideogram_key:
         try:
             async with httpx.AsyncClient(timeout=90.0) as http_client:
@@ -1840,25 +2000,68 @@ class Visual_Generator:
                     subfolder=SubFolder.NARRATION,
                     filename=narration.mp3_path,
                 )
-                # Get duration from MP3 header using mutagen or estimate from file size
+                # Get duration from MP3 header using mutagen
                 try:
                     import mutagen.mp3 as _mp3  # noqa: PLC0415
                     import io as _io  # noqa: PLC0415
                     audio = _mp3.MP3(fileobj=_io.BytesIO(mp3_bytes))
                     actual_audio_seconds = audio.info.length
-                    logger.info("Visual_Generator: actual narration duration=%.1fs", actual_audio_seconds)
-                except Exception:
-                    # Fallback: estimate from file size (128kbps MP3 = 16KB/s)
-                    actual_audio_seconds = len(mp3_bytes) / 16000
-                    logger.info("Visual_Generator: estimated narration duration=%.1fs from file size", actual_audio_seconds)
+                    logger.info(
+                        "Visual_Generator: actual narration duration=%.1fs "
+                        "(bitrate=%d kbps, size=%d bytes)",
+                        actual_audio_seconds,
+                        getattr(audio.info, "bitrate", 0) // 1000,
+                        len(mp3_bytes),
+                    )
+                except Exception as mutagen_exc:
+                    # Fallback: use ffprobe if available, else estimate from word count
+                    # Do NOT use file-size estimate — bitrate varies 64-320kbps
+                    logger.warning(
+                        "Visual_Generator: mutagen failed (%s) — trying ffprobe", mutagen_exc
+                    )
+                    try:
+                        import subprocess as _sp  # noqa: PLC0415
+                        import shutil as _sh  # noqa: PLC0415
+                        import tempfile as _tf  # noqa: PLC0415
+                        ffprobe = _sh.which("ffprobe") or "/opt/homebrew/bin/ffprobe" or "ffprobe"
+                        with _tf.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_mp3:
+                            tmp_mp3.write(mp3_bytes)
+                            tmp_mp3_path = tmp_mp3.name
+                        probe = _sp.run(
+                            [ffprobe, "-v", "error", "-show_entries",
+                             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+                             tmp_mp3_path],
+                            capture_output=True, timeout=15,
+                        )
+                        import os as _os  # noqa: PLC0415
+                        _os.unlink(tmp_mp3_path)
+                        if probe.returncode == 0 and probe.stdout.strip():
+                            actual_audio_seconds = float(probe.stdout.strip())
+                            logger.info(
+                                "Visual_Generator: ffprobe narration duration=%.1fs",
+                                actual_audio_seconds,
+                            )
+                    except Exception as probe_exc:
+                        logger.warning(
+                            "Visual_Generator: ffprobe also failed (%s) — "
+                            "will use word-count estimate", probe_exc
+                        )
             except Exception as exc:
-                logger.warning("Visual_Generator: could not get narration duration (%s), using word count estimate", exc)
+                logger.warning(
+                    "Visual_Generator: could not read narration MP3 (%s), "
+                    "using word count estimate", exc
+                )
 
         # Use actual duration if available, otherwise estimate from word count
         if actual_audio_seconds > 0:
             total_audio_seconds = actual_audio_seconds
         else:
             total_audio_seconds = max(len(segments) * 5, (total_words / wpm) * 60)
+            logger.info(
+                "Visual_Generator: using word-count estimate for duration=%.1fs "
+                "(%d words / %d wpm × 60)",
+                total_audio_seconds, total_words, wpm,
+            )
 
         segment_durations = []
         for seg in segments:
@@ -1889,20 +2092,19 @@ class Visual_Generator:
             visual_prompt_mode=self._visual_prompt_mode,
         )
 
-        # ---- 4. Build per-clip durations (even split within each segment) --
-        # Match cut interval to the provider's native clip duration so we don't
-        # over-generate and waste generation time.
-        # - LTX-Video (runpod): 97 frames @ 25fps = 3.88s
-        # - MiniMax H3:         10s clips (CLIP_DURATION=10)
-        _CUT_EVERY_S: float = float(
-            getattr(self._viewmax, "CLIP_DURATION", 3.88)
-            if hasattr(self._viewmax, "CLIP_DURATION")
-            else 3.88
-        )
+        # ---- 4. Build per-clip durations ----------------------------------------
+        # Cinematic mode: 1 clip per scene, each exactly CLIP_DURATION seconds.
+        # Narration mode: split each segment into clips of CLIP_DURATION each.
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
         per_clip_durations: list[float] = []
-        for seg_dur in segment_durations:
-            n = max(1, round(seg_dur / _CUT_EVERY_S))
-            per_clip_durations.extend([seg_dur / n] * n)
+        if self._visual_prompt_mode == "cinematic":
+            # One clip per scene — use the provider's native clip duration
+            per_clip_durations = [_CLIP_DUR] * len(segments)
+        else:
+            _CUT_EVERY_S: float = _CLIP_DUR
+            for seg_dur in segment_durations:
+                n = max(1, round(seg_dur / _CUT_EVERY_S))
+                per_clip_durations.extend([seg_dur / n] * n)
 
         logger.info(
             "Visual_Generator: %d total clips, durations: %s",
@@ -1924,8 +2126,7 @@ class Visual_Generator:
 
             # ---- 5. Generate thumbnail — AI image + text overlay -----------
             video_title = segments[0].title if segments else video_id
-            script_body = segments[0].body if segments else ""
-            thumbnail_bytes = await _generate_ai_thumbnail(video_title, script_body) or \
+            thumbnail_bytes = await _generate_ai_thumbnail(video_title, script.content) or \
                               _make_thumbnail_jpeg(style_profile, video_title)
 
             # ---- 6. Determine version and upload --------------------------
@@ -1986,44 +2187,187 @@ class Visual_Generator:
         script_topic: str = "",
         visual_prompt_mode: str = "narration",
     ) -> list[ClipResult]:
-        """Generate enough YouTube clips to cover every segment fully.
+        """Dispatch clip generation to the mode-specific implementation.
 
-        Target cut rate: one new clip every ~10 seconds.
-        For a 40-second segment that means 4 different YouTube clips,
-        each 10 seconds, no repetition within the segment.
-
-        Different search queries are used for each clip within a segment
-        (varying keywords) so the visual variety matches the narration pacing.
-
-        Clips are generated in parallel batches (up to 5 concurrent) for speed.
-        A 3-minute video with MiniMax H3 (~18 clips @ 10s) runs in ~60-90 min on
-        one pod. LTX-Video (~46 clips @ 3.88s) runs in ~15 min with a serverless endpoint.
+        Each mode has its own independent logic so changes to one cannot
+        accidentally break the other:
+          - narration: splits segments into multiple clips by duration,
+            parallel generation (up to 5 concurrent for cloud APIs, 1 for pod).
+          - cinematic: one clip per screenplay scene, always serial on the pod,
+            T2VA brief prompts with dialogue tags.
         """
-        # Match cut interval to the provider's native clip duration.
-        # LTX-Video: 97 frames @ 25fps = 3.88s. MiniMax H3: 10s clips.
-        _CUT_EVERY_S: float = float(
-            getattr(self._viewmax, "CLIP_DURATION", 3.88)
-            if hasattr(self._viewmax, "CLIP_DURATION")
-            else 3.88
+        if visual_prompt_mode == "cinematic":
+            return await self._generate_clips_cinematic(
+                segments=segments,
+                video_id=video_id,
+                script_topic=script_topic,
+            )
+        return await self._generate_clips_narration(
+            segments=segments,
+            video_id=video_id,
+            segment_durations=segment_durations,
+            script_topic=script_topic,
         )
-        _MAX_CONCURRENT: int = 5    # parallel clip generation limit (match RunPod max workers)
 
-        results: list[ClipResult] = []
+    # ------------------------------------------------------------------
+    # Cinematic clip generation — one clip per screenplay scene
+    # ------------------------------------------------------------------
 
-        # Generate dynamic character descriptions from the script topic — called
-        # once per video so all clips share consistent character descriptions.
+    async def _generate_clips_cinematic(
+        self,
+        segments: list[_Segment],
+        video_id: str,
+        script_topic: str = "",
+    ) -> list[ClipResult]:
+        """Generate one clip per screenplay scene using T2VA briefs.
+
+        Rules:
+        - 1 clip per ## SCENE segment — the screenplay already wrote the
+          correct number of scenes; over-splitting repeats dialogue fields.
+        - Always serial (MAX_CONCURRENT=1) — single ComfyUI pod, one GPU.
+        - No stagger delay needed since generation is already sequential.
+        - Character descriptions generated once and shared across all clips.
+        """
+        total_clips = len(segments)
+
+        # Character descriptions — generated once, shared across all scenes
         script_body = segments[0].body if segments else ""
         character_descs = await _generate_character_descriptions(script_topic, script_body)
 
-        # Calculate total clips across all segments for scene state continuity
-        total_clips_all_segments = sum(
-            max(1, round((segment_durations[i] if segment_durations and i < len(segment_durations) else 30.0) / _CUT_EVERY_S))
-            for i in range(len(segments))
+        logger.info(
+            "Visual_Generator [cinematic]: generating %d clips (1 per scene, serial)",
+            total_clips,
         )
 
-        # Build a list of all clip tasks with their metadata
+        # Build T2VA prompts sequentially (ordering matters for scene continuity)
+        prompts: list[str] = []
+        for clip_idx, segment in enumerate(segments):
+            scene_state = {
+                "global_clip_num": clip_idx,
+                "total_global_clips": total_clips,
+            }
+            prompt = await _generate_video_prompt_with_claude(
+                segment, clip_num=0, total_clips=1,
+                scene_state=scene_state,
+                script_topic=script_topic,
+                character_descs=character_descs,
+                visual_prompt_mode="cinematic",
+            )
+            prompts.append(prompt)
+
+        # Generate clips one at a time — ComfyUI pod has one GPU.
+        # Last-frame chaining: extract the last frame of clip N and pass it
+        # as first_frame to clip N+1 so H3 anchors visually to the previous shot.
+        results: list[ClipResult] = []
+        last_frame_filename: Optional[str] = None  # None for clip 1 (pure T2V)
+
+        # Need the ComfyUI URL to upload frames — derive it here
+        _pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
+        _comfyui_url = f"https://{_pod_id}-8188.proxy.runpod.net" if _pod_id else ""
+
+        for clip_idx, (segment, prompt) in enumerate(zip(segments, prompts)):
+            logger.info(
+                "Visual_Generator [cinematic]: clip %d/%d — %s%s",
+                clip_idx + 1, total_clips, segment.title[:50],
+                f" [chaining from clip {clip_idx}]" if last_frame_filename else " [T2V anchor]",
+            )
+
+            # Inject first_frame into the viewmax client call for this clip
+            # We call _generate_single_clip which calls self._viewmax.generate_clip
+            # which calls _call_minimax_h3 — we need to pass first_frame_filename through.
+            # _generate_single_clip → generate_clip → _call_minimax_h3
+            # The cleanest path: temporarily set first_frame on the client before calling.
+            # Use a context-safe approach: pass via a per-call attribute.
+            if hasattr(self._viewmax, "_call_minimax_h3"):
+                self._viewmax._next_first_frame = last_frame_filename
+            else:
+                self._viewmax._next_first_frame = None
+
+            result = await self._generate_single_clip(
+                segment_index=clip_idx,
+                segment=segment,
+                prompt=prompt,
+                video_id=video_id,
+                seed=-1,
+            )
+            results.append(result)
+
+            # If clip succeeded and we have a ComfyUI URL, extract last frame for next clip
+            last_frame_filename = None  # reset — don't chain from a failed clip
+            if (
+                not result.is_fallback
+                and len(result.mp4_bytes) > 10_000
+                and _comfyui_url
+                and clip_idx < total_clips - 1  # no need to chain after last clip
+            ):
+                frame_jpeg = await self._viewmax._extract_last_frame(result.mp4_bytes)
+                if frame_jpeg:
+                    stored_name = await self._viewmax._upload_frame_to_comfyui(
+                        frame_jpeg,
+                        _comfyui_url,
+                        filename=f"chain_frame_{clip_idx:02d}.jpg",
+                    )
+                    if stored_name:
+                        last_frame_filename = stored_name
+                        logger.info(
+                            "Visual_Generator [cinematic]: clip %d last frame uploaded as '%s' "
+                            "→ will anchor clip %d",
+                            clip_idx + 1, stored_name, clip_idx + 2,
+                        )
+                    else:
+                        logger.warning(
+                            "Visual_Generator [cinematic]: clip %d frame upload failed "
+                            "— clip %d will use T2V mode",
+                            clip_idx + 1, clip_idx + 2,
+                        )
+                else:
+                    logger.warning(
+                        "Visual_Generator [cinematic]: clip %d frame extraction failed "
+                        "— clip %d will use T2V mode",
+                        clip_idx + 1, clip_idx + 2,
+                    )
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Narration clip generation — multiple clips per segment by duration
+    # ------------------------------------------------------------------
+
+    async def _generate_clips_narration(
+        self,
+        segments: list[_Segment],
+        video_id: str,
+        segment_durations: Optional[list[float]] = None,
+        script_topic: str = "",
+    ) -> list[ClipResult]:
+        """Generate b-roll clips covering the full narration duration.
+
+        Rules:
+        - Split each segment into clips of CLIP_DURATION each based on duration.
+        - Parallel generation: 1 concurrent for minimax_h3 pod, 5 for cloud APIs.
+        - 2s stagger between launches to avoid thundering-herd on the pod.
+        - Character descriptions generated once, shared across all clips for
+          visual consistency.
+        """
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
+        provider = getattr(self._viewmax, "_provider", "kling")
+        _MAX_CONCURRENT: int = 1 if provider == "minimax_h3" else 5
+
+        # Character descriptions — generated once, shared across all clips
+        script_body = segments[0].body if segments else ""
+        character_descs = await _generate_character_descriptions(script_topic, script_body)
+
+        # Build clip task list — one entry per clip to generate
         clip_tasks: list[dict] = []
         global_clip_num = 0
+
+        total_clips_all_segments = sum(
+            max(1, round(
+                (segment_durations[i] if segment_durations and i < len(segment_durations) else 30.0)
+                / _CLIP_DUR
+            ))
+            for i in range(len(segments))
+        )
 
         for seg_idx, segment in enumerate(segments):
             seg_duration = (
@@ -2031,13 +2375,11 @@ class Visual_Generator:
                 if segment_durations and seg_idx < len(segment_durations)
                 else 30.0
             )
-            n_clips = max(1, round(seg_duration / _CUT_EVERY_S))
-
+            n_clips = max(1, round(seg_duration / _CLIP_DUR))
             logger.info(
-                "Visual_Generator: segment '%s' %.1fs → %d clips",
+                "Visual_Generator [narration]: segment '%s' %.1fs → %d clips",
                 segment.title, seg_duration, n_clips,
             )
-
             for clip_num in range(n_clips):
                 clip_tasks.append({
                     "seg_idx": seg_idx,
@@ -2050,11 +2392,11 @@ class Visual_Generator:
                 global_clip_num += 1
 
         logger.info(
-            "Visual_Generator: generating %d clips in parallel (max %d concurrent)",
+            "Visual_Generator [narration]: generating %d clips (max %d concurrent)",
             len(clip_tasks), _MAX_CONCURRENT,
         )
 
-        # Generate prompts first (sequential — uses Claude, needs ordering context)
+        # Build prompts sequentially (Claude needs ordering context)
         prompts: list[str] = []
         for task in clip_tasks:
             scene_state = {
@@ -2064,19 +2406,17 @@ class Visual_Generator:
             prompt = await _generate_video_prompt_with_claude(
                 task["segment"], task["clip_num"], task["n_clips"],
                 scene_state=scene_state,
-                script_topic=script_topic, character_descs=character_descs,
-                visual_prompt_mode=visual_prompt_mode,
+                script_topic=script_topic,
+                character_descs=character_descs,
+                visual_prompt_mode="narration",
             )
             prompts.append(prompt)
 
         # Generate clips in parallel batches using semaphore
-        # Stagger launches by 2s to let RunPod workers spin up gradually
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
         async def _gen_with_limit(idx: int) -> ClipResult:
-            # Stagger: wait idx * 2 seconds before acquiring semaphore
-            # This prevents all 10 requests hitting at the exact same moment
-            await asyncio.sleep(idx * 2.0)
+            await asyncio.sleep(idx * 2.0)  # stagger to avoid thundering herd
             async with semaphore:
                 return await self._generate_single_clip(
                     segment_index=clip_tasks[idx]["seg_idx"],
@@ -2086,13 +2426,10 @@ class Visual_Generator:
                     seed=-1,
                 )
 
-        # Fire all clip generations concurrently (semaphore limits parallelism)
         clip_results = await asyncio.gather(
             *[_gen_with_limit(i) for i in range(len(clip_tasks))]
         )
-
-        results = list(clip_results)
-        return results
+        return list(clip_results)
 
     async def _generate_single_clip(
         self,
@@ -2136,7 +2473,7 @@ class Visual_Generator:
                 )
                 mp4_bytes = await self._viewmax.generate_clip(
                     prompt=current_prompt,
-                    duration_seconds=_CLIP_DEFAULT_DURATION_S,
+                    duration_seconds=getattr(self._viewmax, "CLIP_DURATION", 5),
                     seed=seed,
                 )
                 logger.debug(
@@ -2357,6 +2694,14 @@ class Visual_Generator:
         output_path = tmp_path / "output.mp4"
         n_clips = len(clip_paths)
 
+        # Guard: duration list must match clip list exactly.
+        # A mismatch causes silent 3-second fallback clips in ffmpeg — hard to debug.
+        if len(segment_durations) != n_clips:
+            raise VisualGeneratorError(
+                f"Duration list length {len(segment_durations)} != clip list length {n_clips} "
+                f"for video_id={video_id}. This is a bug in clip/duration calculation."
+            )
+
         # Build ffmpeg argument list — try common install locations
         import shutil as _shutil  # noqa: PLC0415
         ffmpeg_bin = (
@@ -2437,10 +2782,15 @@ class Visual_Generator:
                 str(output_path),
             ]
         else:
-            # Narration mode: mux external MP3 as audio
+            # Narration mode: mux external MP3 as audio.
+            # The concatenated video plays once, then the last frame loops
+            # for any remaining audio duration via the tpad filter.
+            # -shortest then trims both streams to the MP3 length.
             filter_complex = (
                 ";".join(filter_parts)
-                + f";{concat_inputs}concat=n={n_clips}:v=1:a=0[vout]"
+                + f";{concat_inputs}concat=n={n_clips}:v=1:a=0[vconcat]"
+                # tpad: hold last frame indefinitely so -shortest can trim to MP3 length
+                + f";[vconcat]tpad=stop_mode=clone:stop_duration=600[vout]"
             )
             cmd += [
                 "-filter_complex", filter_complex,
@@ -2450,6 +2800,7 @@ class Visual_Generator:
                 "-r", str(_FFMPEG_FRAMERATE),
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
+                "-shortest",
                 str(output_path),
             ]
 

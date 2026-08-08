@@ -713,7 +713,12 @@ class Script_Writer:
         # ---- 3. Call Claude with retry -------------------------------------
         content = await self._call_claude_with_retry(prompt, video_id=video_id)
 
-        # ---- 4. Word-count enforcement -------------------------------------
+        # ---- 4. Word-count enforcement (narration mode only) ---------------
+        # Cinematic mode produces a structured screenplay (## SCENE N / BEAT: /
+        # LINE: / ACTION: field blocks). Word-count enforcement doesn't apply —
+        # the screenplay has a fixed scene count, not a prose word target.
+        # Running the narration revision prompt on a screenplay destroys the
+        # BEAT:/LINE:/ACTION: structure that _generate_cinematic_t2va_brief parses.
         word_count = _count_words(content)
         logger.info(
             "Script_Writer.generate: initial word count=%d (target %d-%d) for video_id=%s",
@@ -723,7 +728,7 @@ class Script_Writer:
             video_id,
         )
 
-        if not (min_words <= word_count <= max_words):
+        if visual_prompt_mode != "cinematic" and not (min_words <= word_count <= max_words):
             logger.warning(
                 "Script_Writer.generate: word count %d out of [%d, %d] — "
                 "running automatic revision for video_id=%s",
@@ -751,6 +756,12 @@ class Script_Writer:
                     error_message=error_msg,
                 )
                 raise ScriptGenerationError(error_msg)
+        elif visual_prompt_mode == "cinematic":
+            logger.info(
+                "Script_Writer.generate: cinematic mode — skipping word-count enforcement "
+                "(screenplay has %d words, %d scenes) for video_id=%s",
+                word_count, content.count("## SCENE"), video_id,
+            )
 
         # ---- 6. Determine version and persist to Asset_Store ---------------
         version = await self._next_version(video_id)

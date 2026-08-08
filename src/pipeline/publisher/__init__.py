@@ -1260,10 +1260,10 @@ class Publisher:
                     result["id"], video_id, schedule_info,
                 )
 
-                # 5. Generate Shorts thumbnail (9:16) and save to Drive for Instagram Reels
-                # NOTE: YouTube Shorts API does not support custom thumbnails via API —
-                # they must be set manually in YouTube Studio. We still generate and save
-                # the thumbnail so the Instagram Reel Manager can use it as a cover image.
+                # 5. Set Shorts thumbnail via YouTube Data API.
+                # The thumbnails.set endpoint works for Shorts (same as regular videos).
+                # Note: on mobile Shorts feed, YouTube may override with an auto-selected
+                # frame — but the thumbnail IS applied for search results and desktop view.
                 try:
                     from pipeline.thumbnail_generator import generate_shorts_thumbnail  # noqa: PLC0415
                     from pipeline.models import SubFolder  # noqa: PLC0415
@@ -1299,13 +1299,22 @@ class Publisher:
                             video_id,
                         )
 
+                        # Also set the thumbnail on the Short via YouTube API.
+                        # NOTE: thumbnails.set is silently ignored by YouTube for Shorts —
+                        # it must be set manually in Studio. Skipping the API call.
+                        logger.info(
+                            "Publisher: Shorts thumbnail saved to Drive for video_id=%s. "
+                            "Set it manually in YouTube Studio → Edit → Thumbnail.",
+                            video_id,
+                        )
+
                 except Exception as thumb_exc:
                     logger.warning(
                         "Publisher: Shorts thumbnail generation/set failed for %s (non-fatal): %s",
                         video_id, thumb_exc,
                     )
 
-                return short_video_id
+                return result["id"]
 
         except Exception as exc:
             logger.warning(
