@@ -127,6 +127,19 @@ def _load_config(config_path: str):  # type: ignore[return]
         print(f"Error: config file is not valid JSON: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    # Allow environment variables to override config.json values at runtime.
+    # This lets GitHub Actions workflow_dispatch inputs control behaviour
+    # without changing config.json or redeploying.
+    import os  # noqa: PLC0415
+    env_overrides = {
+        "VISUAL_PROMPT_MODE": "visual_prompt_mode",
+    }
+    for env_var, config_key in env_overrides.items():
+        val = os.environ.get(env_var, "").strip()
+        if val:
+            raw[config_key] = val
+            print(f"Config override from env: {config_key}={val!r}")
+
     try:
         return PipelineConfig(**raw)
     except ValidationError as exc:

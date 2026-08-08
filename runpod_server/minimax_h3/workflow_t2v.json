@@ -1,0 +1,59 @@
+{
+  "_comment": "MiniMax H3 Text-to-Video ComfyUI workflow (API format). Nodes: load model, set prompt, generate video, save output. Duration snaps to 17k+5 frame grid at 24fps.",
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "MiniMax-H3/FL2VA/transformer",
+      "weight_dtype": "bf16"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "MiniMax-H3/FL2VA/text_encoder",
+      "type": "minimax_h3"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "MiniMax-H3/FL2VA/video_vae"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "MiniMax-H3/FL2VA/audio_vae"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "PROMPT_PLACEHOLDER",
+      "clip": ["2", 0]
+    }
+  },
+  "6": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "positive": ["5", 0],
+      "model": ["1", 0],
+      "vae": ["3", 0],
+      "audio_vae": ["4", 0],
+      "width": 1344,
+      "height": 768,
+      "duration": 10,
+      "steps": 30,
+      "cfg": 7.0,
+      "seed": 0,
+      "audio_enabled": false
+    }
+  },
+  "7": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "filename_prefix": "h3_output",
+      "video": ["6", 0]
+    }
+  }
+}

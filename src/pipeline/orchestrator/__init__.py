@@ -378,6 +378,7 @@ class Orchestrator:
                 video_id=video_id,
                 script_duration_minutes=self._config.script_duration_minutes,
                 script_style=self._config.script_style,
+                visual_prompt_mode=self._config.visual_prompt_mode,
             ),
         )
 
@@ -429,6 +430,7 @@ class Orchestrator:
                         script=script,
                         edits=edit_instructions,
                         video_id=video_id,
+                        visual_prompt_mode=self._config.visual_prompt_mode,
                     ),
                 )
                 if script.asset_url:
@@ -490,6 +492,7 @@ class Orchestrator:
                 ),
             )
             top_topic = new_topics[0]
+            topics = new_topics  # Update topics list so metadata uses the new topic
 
             try:
                 await self._content_calendar.update_topic(video_id, top_topic.title)
@@ -506,6 +509,7 @@ class Orchestrator:
                     style_profile=style_profile,
                     video_id=video_id,
                     script_duration_minutes=self._config.script_duration_minutes,
+                    visual_prompt_mode=self._config.visual_prompt_mode,
                 ),
             )
             if script.asset_url:
@@ -530,23 +534,37 @@ class Orchestrator:
 
         # ------------------------------------------------------------------ #
         # Stage 4: Narration_Generator → NarrationAsset                       #
+        # Skipped in cinematic mode — H3 generates native voice/audio.        #
         # ------------------------------------------------------------------ #
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 
-        narration: NarrationAsset = await self._run_stage(
-            stage_name="narration_generator",
-            video_id=video_id,
-            run_id=run_id,
-            pre_status=PipelineStatus.NARRATION_READY,
-            coro_factory=lambda: self._narration_generator.generate(
-                script=script,
-                voice_id=self._config.voice_id,
+        narration: Optional[NarrationAsset] = None
+        if self._config.visual_prompt_mode != "cinematic":
+            narration = await self._run_stage(
+                stage_name="narration_generator",
                 video_id=video_id,
-            ),
-        )
+                run_id=run_id,
+                pre_status=PipelineStatus.NARRATION_READY,
+                coro_factory=lambda: self._narration_generator.generate(
+                    script=script,
+                    voice_id=self._config.voice_id,
+                    video_id=video_id,
+                ),
+            )
+        else:
+            logger.info(
+                "Orchestrator: cinematic mode — skipping TTS narration for video_id=%s",
+                video_id,
+            )
+            self._emit_log(
+                event_type="stage_transition",
+                stage_name="narration_generator",
+                message="Skipped (cinematic mode — H3 native audio)",
+                video_id=video_id,
+            )
 
         # Update Notion with narration Drive URL
-        if narration.asset_url:
+        if narration and narration.asset_url:
             try:
                 await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
             except Exception as exc:  # noqa: BLE001
@@ -624,7 +642,7 @@ class Orchestrator:
             lnk for lnk in [
                 visual.mp4_url, visual.thumbnail_url,
                 script.asset_url,
-                narration.asset_url,
+                narration.asset_url if narration else None,
             ] if lnk
         ]
         # Gate 2: trigger and enter WAIT state.
@@ -639,11 +657,11 @@ class Orchestrator:
         )
         await self._flush_log(run_id, video_id)
 
-        # Handle Gate 2 reject — mark as rejected and stop pipeline
+        # Handle Gate 2 reject — mark as video rejected and stop pipeline
         if gate2_result.get("action") == "reject":
-            await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
+            await self._update_calendar_status(video_id, PipelineStatus.VIDEO_REJECTED, run_id)
             logger.info(
-                "start_pipeline: Gate 2 rejected by creator — video_id=%s marked as Script Rejected",
+                "start_pipeline: Gate 2 rejected by creator — video_id=%s marked as Video Rejected",
                 video_id,
             )
             self._notifier.send_review_gate(
@@ -739,6 +757,8 @@ class Orchestrator:
                 metadata=metadata,
                 full_video_id=yt_ref.youtube_video_id,
                 publish_at=scheduled_publish_dt,
+                thumbnail_url=visual.thumbnail_url,
+                asset_store=self._asset_store,
             )
             if short_id:
                 schedule_note = ""
@@ -935,6 +955,7 @@ class Orchestrator:
             current_status = await self._content_calendar._get_status(video_id)
             skip_statuses = {
                 PipelineStatus.SCRIPT_REJECTED,
+                PipelineStatus.VIDEO_REJECTED,
                 PipelineStatus.PUBLISHED,
                 PipelineStatus.SCHEDULED,
                 PipelineStatus.PIPELINE_ERROR,
@@ -1072,6 +1093,7 @@ class Orchestrator:
                         style_profile=style_profile,  # type: ignore[arg-type]
                         video_id=video_id,
                         script_duration_minutes=self._config.script_duration_minutes,
+                        visual_prompt_mode=self._config.visual_prompt_mode,
                     ),
                 )
                 await self._update_calendar_status(
@@ -1086,26 +1108,42 @@ class Orchestrator:
         if resume_from in {"narration_generator", "visual_generator",
                            "metadata_generator", "publisher"}:
             if resume_from == "narration_generator":
-                narration = await self._run_stage(
-                    stage_name="narration_generator",
-                    video_id=video_id,
-                    run_id=run_id,
-                    pre_status=PipelineStatus.NARRATION_READY,
-                    coro_factory=lambda: self._narration_generator.generate(
-                        script=script,  # type: ignore[arg-type]
-                        voice_id=self._config.voice_id,
+                # Skip TTS in cinematic mode — no MP3 is generated or stored
+                if self._config.visual_prompt_mode == "cinematic":
+                    logger.info(
+                        "resume_pipeline: cinematic mode — skipping TTS narration for video_id=%s",
+                        video_id,
+                    )
+                    narration = None  # type: ignore[assignment]
+                    # Advance to visual generator stage
+                    await self._update_calendar_status(
+                        video_id, PipelineStatus.GENERATING_VISUALS, run_id
+                    )
+                else:
+                    narration = await self._run_stage(
+                        stage_name="narration_generator",
                         video_id=video_id,
-                    ),
-                )
-                # Update Notion with narration Drive URL
-                if getattr(narration, "asset_url", None):
-                    try:
-                        await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("resume: could not update narration_url for %s: %s", video_id, exc)
+                        run_id=run_id,
+                        pre_status=PipelineStatus.NARRATION_READY,
+                        coro_factory=lambda: self._narration_generator.generate(
+                            script=script,  # type: ignore[arg-type]
+                            voice_id=self._config.voice_id,
+                            video_id=video_id,
+                        ),
+                    )
+                    # Update Notion with narration Drive URL
+                    if getattr(narration, "asset_url", None):
+                        try:
+                            await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("resume: could not update narration_url for %s: %s", video_id, exc)
             else:
-                assert narration_bytes is not None
-                narration = _reconstruct_narration(video_id)
+                # Resuming from a later stage — reconstruct or None for cinematic
+                if self._config.visual_prompt_mode == "cinematic":
+                    narration = None  # type: ignore[assignment]
+                else:
+                    assert narration_bytes is not None
+                    narration = _reconstruct_narration(video_id)
 
         # Stage: visual_generator
         if resume_from in {"visual_generator", "metadata_generator", "publisher"}:
@@ -1345,6 +1383,12 @@ class Orchestrator:
                     video_id, PipelineStatus.APPROVED_FOR_UPLOAD
                 )
                 logger.info("Gate 2 approved for video_id=%s", video_id)
+
+            elif action == "reject":
+                await self._content_calendar.update_status(
+                    video_id, PipelineStatus.VIDEO_REJECTED
+                )
+                logger.info("Gate 2 rejected for video_id=%s — marked as Video Rejected", video_id)
 
             elif action == "regenerate":
                 # Map asset name to re-entry status.
@@ -1682,6 +1726,7 @@ class Orchestrator:
                 style_profile=style_profile,
                 video_id=video_id,
                 script_duration_minutes=self._config.script_duration_minutes,
+                visual_prompt_mode=self._config.visual_prompt_mode,
             ),
         )
 
@@ -1714,21 +1759,23 @@ class Orchestrator:
         # Advance past gate (batch mode: gates do not block generation).
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 
-        # Stage: Narration_Generator
-        narration: NarrationAsset = await self._run_stage(
-            stage_name="narration_generator",
-            video_id=video_id,
-            run_id=run_id,
-            pre_status=PipelineStatus.NARRATION_READY,
-            coro_factory=lambda: self._narration_generator.generate(
-                script=script,
-                voice_id=self._config.voice_id,
+        # Stage: Narration_Generator (skipped in cinematic mode)
+        narration: Optional[NarrationAsset] = None
+        if self._config.visual_prompt_mode != "cinematic":
+            narration = await self._run_stage(
+                stage_name="narration_generator",
                 video_id=video_id,
-            ),
-        )
+                run_id=run_id,
+                pre_status=PipelineStatus.NARRATION_READY,
+                coro_factory=lambda: self._narration_generator.generate(
+                    script=script,
+                    voice_id=self._config.voice_id,
+                    video_id=video_id,
+                ),
+            )
 
         # Update Notion with narration Drive URL
-        if getattr(narration, "asset_url", None):
+        if narration and narration.asset_url:
             try:
                 await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
             except Exception as exc:  # noqa: BLE001

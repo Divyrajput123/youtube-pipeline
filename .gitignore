@@ -199,6 +199,15 @@ secret.json
 data/output/*
 !data/output/.gitkeep
 
+# Local pipeline output (calendar, generated videos, thumbnails)
+pipeline_output/
+
+# Root-level ad-hoc test scripts (use tests/ directory instead)
+test_*.py
+
+# Semantic review output from Kiro
+semantic-review/
+
 # Windows virtualenv Scripts folder (not our project scripts/)
 Scripts/
 
