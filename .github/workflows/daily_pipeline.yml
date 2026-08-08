@@ -24,6 +24,14 @@ on:
           - single
           - resume-all
           - resume-and-generate
+      visual_prompt_mode:
+        description: 'Video style: narration (YouTube essay + TTS voice) or cinematic (screenplay + H3 native voice)'
+        required: false
+        default: 'narration'
+        type: choice
+        options:
+          - narration
+          - cinematic
 
 jobs:
   run-pipeline:
@@ -58,8 +66,16 @@ jobs:
 
       - name: Create .env from GitHub Secrets
         run: |
+          # Determine visual_prompt_mode: manual input overrides config.json default
+          VISUAL_MODE="${{ github.event.inputs.visual_prompt_mode }}"
+          if [ -z "$VISUAL_MODE" ]; then
+            VISUAL_MODE="narration"  # scheduled runs default to narration
+          fi
+          echo "📺 Visual prompt mode: $VISUAL_MODE"
+
           cat > .env <<EOF
           PIPELINE_MODE=production
+          VISUAL_PROMPT_MODE=${VISUAL_MODE}
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
           ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
           NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}

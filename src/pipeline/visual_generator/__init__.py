@@ -1840,25 +1840,68 @@ class Visual_Generator:
                     subfolder=SubFolder.NARRATION,
                     filename=narration.mp3_path,
                 )
-                # Get duration from MP3 header using mutagen or estimate from file size
+                # Get duration from MP3 header using mutagen
                 try:
                     import mutagen.mp3 as _mp3  # noqa: PLC0415
                     import io as _io  # noqa: PLC0415
                     audio = _mp3.MP3(fileobj=_io.BytesIO(mp3_bytes))
                     actual_audio_seconds = audio.info.length
-                    logger.info("Visual_Generator: actual narration duration=%.1fs", actual_audio_seconds)
-                except Exception:
-                    # Fallback: estimate from file size (128kbps MP3 = 16KB/s)
-                    actual_audio_seconds = len(mp3_bytes) / 16000
-                    logger.info("Visual_Generator: estimated narration duration=%.1fs from file size", actual_audio_seconds)
+                    logger.info(
+                        "Visual_Generator: actual narration duration=%.1fs "
+                        "(bitrate=%d kbps, size=%d bytes)",
+                        actual_audio_seconds,
+                        getattr(audio.info, "bitrate", 0) // 1000,
+                        len(mp3_bytes),
+                    )
+                except Exception as mutagen_exc:
+                    # Fallback: use ffprobe if available, else estimate from word count
+                    # Do NOT use file-size estimate — bitrate varies 64-320kbps
+                    logger.warning(
+                        "Visual_Generator: mutagen failed (%s) — trying ffprobe", mutagen_exc
+                    )
+                    try:
+                        import subprocess as _sp  # noqa: PLC0415
+                        import shutil as _sh  # noqa: PLC0415
+                        import tempfile as _tf  # noqa: PLC0415
+                        ffprobe = _sh.which("ffprobe") or "/opt/homebrew/bin/ffprobe" or "ffprobe"
+                        with _tf.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_mp3:
+                            tmp_mp3.write(mp3_bytes)
+                            tmp_mp3_path = tmp_mp3.name
+                        probe = _sp.run(
+                            [ffprobe, "-v", "error", "-show_entries",
+                             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+                             tmp_mp3_path],
+                            capture_output=True, timeout=15,
+                        )
+                        import os as _os  # noqa: PLC0415
+                        _os.unlink(tmp_mp3_path)
+                        if probe.returncode == 0 and probe.stdout.strip():
+                            actual_audio_seconds = float(probe.stdout.strip())
+                            logger.info(
+                                "Visual_Generator: ffprobe narration duration=%.1fs",
+                                actual_audio_seconds,
+                            )
+                    except Exception as probe_exc:
+                        logger.warning(
+                            "Visual_Generator: ffprobe also failed (%s) — "
+                            "will use word-count estimate", probe_exc
+                        )
             except Exception as exc:
-                logger.warning("Visual_Generator: could not get narration duration (%s), using word count estimate", exc)
+                logger.warning(
+                    "Visual_Generator: could not read narration MP3 (%s), "
+                    "using word count estimate", exc
+                )
 
         # Use actual duration if available, otherwise estimate from word count
         if actual_audio_seconds > 0:
             total_audio_seconds = actual_audio_seconds
         else:
             total_audio_seconds = max(len(segments) * 5, (total_words / wpm) * 60)
+            logger.info(
+                "Visual_Generator: using word-count estimate for duration=%.1fs "
+                "(%d words / %d wpm × 60)",
+                total_audio_seconds, total_words, wpm,
+            )
 
         segment_durations = []
         for seg in segments:
@@ -2437,10 +2480,15 @@ class Visual_Generator:
                 str(output_path),
             ]
         else:
-            # Narration mode: mux external MP3 as audio
+            # Narration mode: mux external MP3 as audio.
+            # The concatenated video plays once, then the last frame loops
+            # for any remaining audio duration via the tpad filter.
+            # -shortest then trims both streams to the MP3 length.
             filter_complex = (
                 ";".join(filter_parts)
-                + f";{concat_inputs}concat=n={n_clips}:v=1:a=0[vout]"
+                + f";{concat_inputs}concat=n={n_clips}:v=1:a=0[vconcat]"
+                # tpad: hold last frame indefinitely so -shortest can trim to MP3 length
+                + f";[vconcat]tpad=stop_mode=clone:stop_duration=600[vout]"
             )
             cmd += [
                 "-filter_complex", filter_complex,
@@ -2450,6 +2498,7 @@ class Visual_Generator:
                 "-r", str(_FFMPEG_FRAMERATE),
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
+                "-shortest",
                 str(output_path),
             ]
 
