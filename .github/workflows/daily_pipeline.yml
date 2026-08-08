@@ -96,7 +96,7 @@ jobs:
       - name: Start MiniMax H3 Pod (if using minimax_h3 provider)
         if: env.RUNPOD_H3_POD_ID != ''
         run: |
-          echo "🚀 Starting MiniMax H3 ComfyUI Pod..."
+          echo "🚀 Starting MiniMax H3 ComfyUI Pod (will retry up to 30 min if GPU unavailable)..."
           PYTHONPATH=src python runpod_server/minimax_h3/pod_manager.py start
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}

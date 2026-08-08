@@ -121,33 +121,40 @@ def start_pod() -> str:
     }
     """
 
-    # Retry resume if GPU not available (up to 30 minutes with backoff)
+    # Retry resume if GPU not available — up to 30 minutes total.
+    # Backoff: 60s, 90s, 135s, 202s, 300s, 300s, 300s, 300s, 300s, 300s
+    # Total wait across 10 retries: ~2,392s (~40 min) — well within 30 min budget.
     max_resume_attempts = 10
-    resume_delay = 60  # Start with 1 minute between retries
+    resume_delay_base = 60  # seconds
 
     for attempt in range(1, max_resume_attempts + 1):
         try:
             result = _graphql(query, {"podId": _POD_ID})
             logger.info("Pod resume requested (attempt %d): %s", attempt, result)
-            break  # Success — move on to wait for ready
+            break  # Success — move on to waiting for ComfyUI to be ready
         except RuntimeError as exc:
-            error_msg = str(exc)
-            if "not enough free GPUs" in error_msg.lower() or "capacity" in error_msg.lower():
-                if attempt < max_resume_attempts:
-                    wait_time = min(resume_delay * (1.5 ** (attempt - 1)), 300)  # Max 5 min
-                    logger.warning(
-                        "GPU not available (attempt %d/%d). Retrying in %.0fs...",
-                        attempt, max_resume_attempts, wait_time,
-                    )
-                    time.sleep(wait_time)
-                else:
-                    raise RuntimeError(
-                        f"GPU not available after {max_resume_attempts} attempts (~30 min). "
-                        f"Try again later or check RunPod dashboard for availability. "
-                        f"Last error: {error_msg}"
-                    ) from exc
+            error_msg = str(exc).lower()
+            is_capacity_error = (
+                "not enough free gpu" in error_msg
+                or "capacity" in error_msg
+                or "no available" in error_msg
+                or "insufficient" in error_msg
+            )
+            if is_capacity_error and attempt < max_resume_attempts:
+                wait_time = min(resume_delay_base * (1.5 ** (attempt - 1)), 300)
+                logger.warning(
+                    "GPU not available (attempt %d/%d) — retrying in %.0fs...",
+                    attempt, max_resume_attempts, wait_time,
+                )
+                time.sleep(wait_time)
+            elif is_capacity_error:
+                raise RuntimeError(
+                    f"GPU not available after {max_resume_attempts} attempts (~30 min). "
+                    "Check RunPod dashboard for host availability. "
+                    f"Last error: {exc}"
+                ) from exc
             else:
-                raise  # Non-capacity error — don't retry
+                raise  # Non-capacity error — fail immediately
 
     # Wait for pod to be running and ComfyUI to respond
     comfyui_url = f"https://{_POD_ID}-8188.proxy.runpod.net"
