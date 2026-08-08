@@ -789,7 +789,9 @@ class Script_Writer:
                 video_id,
             )
         elif script_style == "kids_rhyming":
-            prompt = _build_kids_rhyming_prompt(topic, style_profile, min_words, max_words)
+            # kids_rhyming uses _build_generation_prompt with script_style passed through —
+            # _get_style_instructions handles the rhyming rules inside the prompt.
+            prompt = _build_generation_prompt(topic, style_profile, min_words, max_words, script_style="kids_rhyming")
             logger.info(
                 "Script_Writer.generate: using kids rhyming format for video_id=%s",
                 video_id,

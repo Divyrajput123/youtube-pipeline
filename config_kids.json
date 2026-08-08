@@ -5,7 +5,9 @@
   "_voice_note": "Gigi — child-like, playful ElevenLabs voice (jBpfuIE2acCO8z3wKNLl). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
   "voice_id": "jBpfuIE2acCO8z3wKNLl",
   "topic_research_provider": "perplexity",
-  "visual_video_provider": "runpod",
+  "visual_video_provider": "minimax_h3",
+  "_visual_prompt_mode_note": "cinematic = H3 native voice + animation (no TTS). narration = TTS voice + visuals.",
+  "visual_prompt_mode": "cinematic",
   "narration_provider": "elevenlabs",
   "style_profile_cache_days": 7,
 

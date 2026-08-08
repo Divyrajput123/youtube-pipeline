@@ -509,6 +509,7 @@ class Orchestrator:
                     style_profile=style_profile,
                     video_id=video_id,
                     script_duration_minutes=self._config.script_duration_minutes,
+                    script_style=self._config.script_style,
                     visual_prompt_mode=self._config.visual_prompt_mode,
                 ),
             )
@@ -1093,6 +1094,7 @@ class Orchestrator:
                         style_profile=style_profile,  # type: ignore[arg-type]
                         video_id=video_id,
                         script_duration_minutes=self._config.script_duration_minutes,
+                        script_style=self._config.script_style,
                         visual_prompt_mode=self._config.visual_prompt_mode,
                     ),
                 )
@@ -1726,6 +1728,7 @@ class Orchestrator:
                 style_profile=style_profile,
                 video_id=video_id,
                 script_duration_minutes=self._config.script_duration_minutes,
+                script_style=self._config.script_style,
                 visual_prompt_mode=self._config.visual_prompt_mode,
             ),
         )
