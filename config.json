@@ -7,7 +7,7 @@
   "topic_research_provider": "perplexity",
   "_visual_video_provider_note": "Choose 'kling' for the Kling API, 'runpod' for LTX-Video RunPod server, or 'minimax_h3' for MiniMax H3 (best quality, 10s clips, 768p, requires RUNPOD_H3_ENDPOINT_ID).",
   "visual_video_provider": "minimax_h3",
-  "_visual_prompt_mode_note": "narration = YouTube essay style (TTS voice + cinematic b-roll). cinematic = movie/anime style (H3 native voice, character dialogue, screenplay format, no TTS).",
+  "_visual_prompt_mode_note": "cinematic = YouTube essay style (TTS voice + cinematic b-roll). cinematic = movie/anime style (H3 native voice, character dialogue, screenplay format, no TTS).",
   "visual_prompt_mode": "narration",
   "style_profile_cache_days": 7,
 
