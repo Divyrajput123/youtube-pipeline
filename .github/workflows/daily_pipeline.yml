@@ -94,7 +94,7 @@ jobs:
           grep -c "GOOGLE_CLOUD_API_KEY" .env && echo "GOOGLE_CLOUD_API_KEY present"
 
       - name: Start MiniMax H3 Pod (if using minimax_h3 provider)
-        if: secrets.RUNPOD_H3_POD_ID != ''
+        if: env.RUNPOD_H3_POD_ID != ''
         run: |
           echo "🚀 Starting MiniMax H3 ComfyUI Pod..."
           PYTHONPATH=src python runpod_server/minimax_h3/pod_manager.py start
@@ -135,7 +135,7 @@ jobs:
           PYTHONUNBUFFERED: 1
 
       - name: Stop MiniMax H3 Pod (always, even on failure)
-        if: always() && secrets.RUNPOD_H3_POD_ID != ''
+        if: always() && env.RUNPOD_H3_POD_ID != ''
         run: |
           echo "🛑 Stopping MiniMax H3 Pod..."
           PYTHONPATH=src python runpod_server/minimax_h3/pod_manager.py stop || true
