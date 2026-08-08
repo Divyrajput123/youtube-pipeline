@@ -40,6 +40,7 @@ class PipelineStatus(str, Enum):
     PUBLISHED = "Published"
     PIPELINE_ERROR = "Pipeline Error"
     SCRIPT_REJECTED = "Script Rejected"
+    VIDEO_REJECTED = "Video Rejected"
 
 
 class SubFolder(str, Enum):

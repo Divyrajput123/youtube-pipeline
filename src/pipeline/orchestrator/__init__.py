@@ -656,11 +656,11 @@ class Orchestrator:
         )
         await self._flush_log(run_id, video_id)
 
-        # Handle Gate 2 reject — mark as rejected and stop pipeline
+        # Handle Gate 2 reject — mark as video rejected and stop pipeline
         if gate2_result.get("action") == "reject":
-            await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_REJECTED, run_id)
+            await self._update_calendar_status(video_id, PipelineStatus.VIDEO_REJECTED, run_id)
             logger.info(
-                "start_pipeline: Gate 2 rejected by creator — video_id=%s marked as Script Rejected",
+                "start_pipeline: Gate 2 rejected by creator — video_id=%s marked as Video Rejected",
                 video_id,
             )
             self._notifier.send_review_gate(
@@ -954,6 +954,7 @@ class Orchestrator:
             current_status = await self._content_calendar._get_status(video_id)
             skip_statuses = {
                 PipelineStatus.SCRIPT_REJECTED,
+                PipelineStatus.VIDEO_REJECTED,
                 PipelineStatus.PUBLISHED,
                 PipelineStatus.SCHEDULED,
                 PipelineStatus.PIPELINE_ERROR,
@@ -1365,6 +1366,12 @@ class Orchestrator:
                     video_id, PipelineStatus.APPROVED_FOR_UPLOAD
                 )
                 logger.info("Gate 2 approved for video_id=%s", video_id)
+
+            elif action == "reject":
+                await self._content_calendar.update_status(
+                    video_id, PipelineStatus.VIDEO_REJECTED
+                )
+                logger.info("Gate 2 rejected for video_id=%s — marked as Video Rejected", video_id)
 
             elif action == "regenerate":
                 # Map asset name to re-entry status.
