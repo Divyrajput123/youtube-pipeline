@@ -72,45 +72,47 @@ jobs:
           # Determine visual_prompt_mode: manual input overrides config.json default
           VISUAL_MODE="${{ github.event.inputs.visual_prompt_mode }}"
           if [ -z "$VISUAL_MODE" ]; then
-            VISUAL_MODE="narration"  # scheduled runs default to narration
+            VISUAL_MODE="narration"
+          fi
+          KLING_MODEL_VAL="${{ secrets.KLING_MODEL }}"
+          if [ -z "$KLING_MODEL_VAL" ]; then
+            KLING_MODEL_VAL="kling-v1-6"
           fi
           echo "📺 Visual prompt mode: $VISUAL_MODE"
 
-          cat > .env <<'ENVEOF'
-PIPELINE_MODE=production
-ENVEOF
-          # Append each secret on its own line — no leading whitespace, no sed needed
-          printf '%s\n' \
-            "VISUAL_PROMPT_MODE=${VISUAL_MODE}" \
-            "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" \
-            "ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}" \
-            "NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}" \
-            "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}" \
-            "PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}" \
-            "TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}" \
-            "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
-            "LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}" \
-            "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" \
-            "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" \
-            "GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}" \
-            "GOOGLE_DRIVE_FOLDER_ID=${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}" \
-            "KLING_API_KEY=${{ secrets.KLING_API_KEY }}" \
-            "KLING_MODEL=${{ secrets.KLING_MODEL || 'kling-v1-6' }}" \
-            "IDEOGRAM_API_KEY=${{ secrets.IDEOGRAM_API_KEY }}" \
-            "NGROK_AUTH_TOKEN=${{ secrets.NGROK_AUTH_TOKEN }}" \
-            "NGROK_ENABLED=true" \
-            "REVIEW_SERVER_PORT=8742" \
-            "PIPELINE_PUBLIC_URL=http://localhost:8742" \
-            "RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}" \
-            "RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}" \
-            "RUNPOD_H3_POD_ID=${{ secrets.RUNPOD_H3_POD_ID }}" \
-            "SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}" \
-            "INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN }}" \
-            "INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}" \
-            "FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}" \
-            "FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}" \
-            "GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}" \
-            >> .env
+          # Write .env line by line — no heredoc indentation issues, no sed needed
+          {
+            echo "PIPELINE_MODE=production"
+            echo "VISUAL_PROMPT_MODE=${VISUAL_MODE}"
+            echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
+            echo "ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}"
+            echo "NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}"
+            echo "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}"
+            echo "PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}"
+            echo "TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}"
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
+            echo "LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}"
+            echo "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}"
+            echo "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}"
+            echo "GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}"
+            echo "GOOGLE_DRIVE_FOLDER_ID=${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}"
+            echo "KLING_API_KEY=${{ secrets.KLING_API_KEY }}"
+            echo "KLING_MODEL=${KLING_MODEL_VAL}"
+            echo "IDEOGRAM_API_KEY=${{ secrets.IDEOGRAM_API_KEY }}"
+            echo "NGROK_AUTH_TOKEN=${{ secrets.NGROK_AUTH_TOKEN }}"
+            echo "NGROK_ENABLED=true"
+            echo "REVIEW_SERVER_PORT=8742"
+            echo "PIPELINE_PUBLIC_URL=http://localhost:8742"
+            echo "RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}"
+            echo "RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}"
+            echo "RUNPOD_H3_POD_ID=${{ secrets.RUNPOD_H3_POD_ID }}"
+            echo "SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}"
+            echo "INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN }}"
+            echo "INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}"
+            echo "FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}"
+            echo "FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}"
+            echo "GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}"
+          } > .env
           echo "✅ .env created ($(wc -l < .env) lines)"
           grep -c "GOOGLE_CLOUD_API_KEY" .env && echo "GOOGLE_CLOUD_API_KEY present"
 
