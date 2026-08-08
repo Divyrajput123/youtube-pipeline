@@ -78,7 +78,11 @@ _THUMBNAIL_MAX_BYTES: int = 2 * 1024 * 1024  # 2 MB
 _FFMPEG_FRAMERATE: int = 24
 _FFMPEG_RESOLUTION: str = "1920x1080"
 _FALLBACK_CLIP_DURATION_S: int = 3  # seconds for a still-image fallback clip
-_CLIP_DEFAULT_DURATION_S: int = 5   # seconds requested from Viewmax per clip
+# NOTE: Do NOT add a _CLIP_DEFAULT_DURATION_S constant here.
+# Clip duration is always read from ViewmaxMCPClient.CLIP_DURATION so there
+# is exactly one source of truth per provider (kling=5, minimax_h3=15).
+# Using a module-level constant causes silent duration mismatches when the
+# provider is switched — the constant gets stale while CLIP_DURATION is updated.
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -591,9 +595,12 @@ class ViewmaxMCPClient:
             prompt_id = result["prompt_id"]
             logger.info("ViewmaxMCPClient: H3 ComfyUI prompt queued: %s", prompt_id)
 
-        # Poll /history until the prompt is done (max 15 minutes for long clips)
+        # Poll /history until the prompt is done.
+        # With serial generation (_MAX_CONCURRENT=1) each clip is processed
+        # one at a time, so 15 min per clip is sufficient.
+        # Give 30 min to be safe for large 15s clips on slower GPUs.
         async with httpx.AsyncClient(timeout=60.0) as client:
-            for attempt in range(90):  # 90 * 10s = 15 min
+            for attempt in range(180):  # 180 * 10s = 30 min
                 await asyncio.sleep(10)
 
                 try:
@@ -662,7 +669,7 @@ class ViewmaxMCPClient:
                         attempt + 1, exc,
                     )
 
-        raise RuntimeError(f"H3 ComfyUI prompt {prompt_id} timed out after 15 minutes")
+        raise RuntimeError(f"H3 ComfyUI prompt {prompt_id} timed out after 30 minutes")
 
     @staticmethod
     def _clean_prompt(raw_prompt: str) -> str:
@@ -2049,7 +2056,15 @@ class Visual_Generator:
             if hasattr(self._viewmax, "CLIP_DURATION")
             else 3.88
         )
-        _MAX_CONCURRENT: int = 5    # parallel clip generation limit (match RunPod max workers)
+
+        # Concurrency limit:
+        # - minimax_h3 on a single ComfyUI pod: serial (1 at a time) — the pod
+        #   has one GPU and queues jobs. Firing 12 concurrent requests all hit
+        #   the 15-min timeout before the queue drains, causing placeholders.
+        # - kling: 5 concurrent (cloud API handles parallelism)
+        # - runpod serverless: 5 concurrent (multiple workers)
+        provider = getattr(self._viewmax, "_provider", "kling")
+        _MAX_CONCURRENT: int = 1 if provider == "minimax_h3" else 5
 
         results: list[ClipResult] = []
 
@@ -2179,7 +2194,7 @@ class Visual_Generator:
                 )
                 mp4_bytes = await self._viewmax.generate_clip(
                     prompt=current_prompt,
-                    duration_seconds=_CLIP_DEFAULT_DURATION_S,
+                    duration_seconds=getattr(self._viewmax, "CLIP_DURATION", 5),
                     seed=seed,
                 )
                 logger.debug(

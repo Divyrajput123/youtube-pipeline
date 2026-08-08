@@ -36,7 +36,7 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # GitHub-hosted runner maximum: 6 hours
+    timeout-minutes: 360  # 6 hours — serial H3 generation: 12 clips × 4 min = ~1hr + overhead
 
     steps:
       - name: Checkout repository
