@@ -442,6 +442,140 @@ CURRENT SCRIPT:
 """
 
 
+def _build_cinematic_generation_prompt(
+    topic: TopicEntry,
+    style_profile: StyleProfile,
+    min_words: int,
+    max_words: int,
+) -> str:
+    """Construct the Claude generation prompt for cinematic mode.
+
+    Produces a screenplay-format script with:
+    - Character dialogue in scene slugs
+    - Action beats (no dialogue) for pure visual moments
+    - ~8-12 dialogue lines total for a 3-minute video
+    - Subtext-driven lines that hold attention like a movie
+
+    The output format uses custom markers that _generate_video_prompt_with_claude
+    parses to produce T2VA briefs per clip:
+      ## SCENE N — SLUG
+      BEAT_TYPE: action|dialogue
+      CHAR: character name (for dialogue beats)
+      LINE: spoken line (for dialogue beats)
+      ACTION: scene description (for action beats)
+    """
+    sp = style_profile
+    duration_min = max_words / _WPM
+
+    # Derive approximate clip count: 1 clip per 15s
+    total_clips = max(4, round(duration_min * 60 / 15))
+    # Dialogue clips: roughly 1 in every 3 clips has dialogue
+    dialogue_clips = max(3, total_clips // 3)
+    action_clips = total_clips - dialogue_clips
+
+    prompt = f"""You are writing a cinematic screenplay for a {duration_min:.0f}-minute AI-generated video.
+
+VIDEO TOPIC: {topic.title}
+
+This is NOT a YouTube essay. This is a MOVIE SCENE — characters speak, fight, argue, reveal secrets.
+The viewer should feel like they're watching an anime film or Hollywood blockbuster, not listening to a documentary.
+
+---
+SCREENPLAY RULES (follow ALL of them):
+
+1. SUBTEXT — characters never say exactly what they mean.
+   BAD: "I am angry at you."
+   GOOD: "Take your time. I'll still be here when you've run out of excuses."
+
+2. SHORT PUNCHY LINES — 3-8 words per dialogue line. Long speeches kill tension.
+   BAD: "I have been training for this moment my entire life and I refuse to let you defeat me."
+   GOOD: "I was born for this moment." [beat] "I know. That's what scares me."
+
+3. DISTINCT VOICES — each character sounds completely different. No swapping.
+   - Cocky characters use rhetorical questions and understatement
+   - Cold characters use flat declarative statements with no emotion
+   - Desperate characters interrupt themselves mid-thought
+
+4. STAKES IN EVERY LINE — each exchange reveals something, changes something, or raises tension.
+   Dead air = dead viewer.
+
+5. ACTION BEATS between dialogue — silence + spectacle is more powerful than constant talking.
+   A 15-second action beat after a key line lets it land.
+
+6. THE PEAK LINE — one line that the entire video builds toward. 
+   It reframes everything the viewer thought they knew. It's what they'll quote in comments.
+
+7. UNRESOLVED ENDING — final clip cuts on action, not resolution. Leave them wanting more.
+
+8. DAMAGE ESCALATION — the environment gets progressively destroyed across clips.
+   Clip 1: intact. Clip {total_clips//2}: partially destroyed. Clip {total_clips}: crater/ruins.
+
+---
+REQUIRED OUTPUT FORMAT (follow exactly):
+
+Write {total_clips} scenes. Each scene is one 15-second clip.
+Use this exact format for each scene:
+
+## SCENE [N] — [SLUG: e.g. INT. ROOFTOP - DUSK or EXT. CRATER - NIGHT]
+BEAT: [action OR dialogue]
+[If dialogue:]
+CHAR1: [Character name and appearance: brief visual desc]
+VOICE1: [gender, voice quality, accent]
+LINE1: [spoken line — 3-8 words]
+CHAR2: [Character name and appearance]  (omit if only 1 speaker)
+VOICE2: [gender, voice quality, accent]  (omit if only 1 speaker)
+LINE2: [spoken line]  (omit if only 1 speaker)
+REACTION: [what happens physically after the lines — expression, action, pause]
+[If action beat:]
+ACTION: [pure visual description of what happens — no dialogue]
+SOUND: [ambient audio + SFX description]
+MUSIC: [score description for this moment]
+DAMAGE: [current state of environment — intact/cracking/partially destroyed/ruins]
+
+---
+SCENE STRUCTURE for {total_clips} clips (~{duration_min:.0f} min):
+
+- Scenes 1-2: ESTABLISH — introduce characters, hint at conflict, first taunt
+- Scenes 3-{total_clips//2}: ESCALATE — exchanges get sharper, action intensifies, one reveal
+- Scene {total_clips//2 + 1}: PEAK LINE — the single most memorable line of the video
+- Scenes {total_clips//2 + 2}-{total_clips-1}: CLIMAX — maximum destruction, pure action beats
+- Scene {total_clips}: UNRESOLVED — final line or image that cuts before resolution
+
+Dialogue scenes: {dialogue_clips} total (spread across the structure above)
+Action-only scenes: {action_clips} total (use for escalation and climax)
+
+Make the dialogue CINEMATIC. Each line should feel like it could be a movie poster quote.
+The topic "{topic.title}" should be the BACKDROP — the real story is the characters and their conflict.
+
+Output ONLY the screenplay scenes in the format above. No preamble, no explanation.
+"""
+    return prompt
+
+
+def _build_cinematic_revision_prompt(script_content: str, edits: str) -> str:
+    """Revise a cinematic screenplay based on creator feedback.
+
+    Preserves the ## SCENE N / BEAT: / LINE: / ACTION: field structure so
+    _generate_cinematic_t2va_brief can still parse the output.
+    """
+    return f"""You are revising a cinematic screenplay based on creator feedback.
+
+EDIT INSTRUCTIONS:
+{edits}
+
+REQUIREMENTS FOR THE REVISED SCREENPLAY:
+- Preserve all scene headings exactly: ## SCENE [N] — [SLUG]
+- Preserve all field names exactly: BEAT:, CHAR1:, VOICE1:, LINE1:, CHAR2:, VOICE2:, LINE2:, REACTION:, ACTION:, SOUND:, MUSIC:, DAMAGE:
+- Apply the edit instructions faithfully (change dialogue, swap scenes, adjust tone, etc.)
+- Keep the same number of scenes unless explicitly asked to add/remove
+- Dialogue lines stay 3-8 words, subtext-driven, no on-the-nose emotion
+- Output ONLY the revised screenplay, no preamble, no explanations
+
+CURRENT SCREENPLAY:
+{script_content}
+"""
+
+
 def _build_revision_prompt(script_content: str, edits: str) -> str:
     """Construct a prompt asking Claude to apply user edits to an existing script.
 
@@ -506,6 +640,7 @@ class Script_Writer:
         style_profile: StyleProfile,
         video_id: str,
         script_duration_minutes: Optional[float] = None,
+        visual_prompt_mode: str = "narration",
     ) -> Script:
         """Generate a new script for *topic* styled after *style_profile*.
 
@@ -525,6 +660,9 @@ class Script_Writer:
             script_duration_minutes: Target duration in minutes. If provided,
                 overrides module-level _MIN_WORDS / _MAX_WORDS. Defaults to
                 config.json or env var values.
+            visual_prompt_mode: ``"narration"`` (default) generates a YouTube
+                essay script. ``"cinematic"`` generates a screenplay with
+                character dialogue and action beats for H3 native audio.
 
         Returns:
             A :class:`~pipeline.models.Script` with ``asset_url`` set.
@@ -563,7 +701,14 @@ class Script_Writer:
             min_words = _MIN_WORDS
             max_words = _MAX_WORDS
 
-        prompt = _build_generation_prompt(topic, style_profile, min_words, max_words)
+        if visual_prompt_mode == "cinematic":
+            prompt = _build_cinematic_generation_prompt(topic, style_profile, min_words, max_words)
+            logger.info(
+                "Script_Writer.generate: using cinematic screenplay format for video_id=%s",
+                video_id,
+            )
+        else:
+            prompt = _build_generation_prompt(topic, style_profile, min_words, max_words)
 
         # ---- 3. Call Claude with retry -------------------------------------
         content = await self._call_claude_with_retry(prompt, video_id=video_id)
@@ -641,6 +786,7 @@ class Script_Writer:
         script: Script,
         edits: str,
         video_id: str,
+        visual_prompt_mode: str = "narration",
     ) -> Script:
         """Apply creator edits to an existing script and save as the next version.
 
@@ -675,7 +821,10 @@ class Script_Writer:
             )
 
         # ---- Build revision prompt and call Claude -------------------------
-        prompt = _build_revision_prompt(script.content, edits)
+        if visual_prompt_mode == "cinematic":
+            prompt = _build_cinematic_revision_prompt(script.content, edits)
+        else:
+            prompt = _build_revision_prompt(script.content, edits)
         revised_content = await self._call_claude_with_retry(prompt, video_id=video_id)
 
         word_count = _count_words(revised_content)

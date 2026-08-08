@@ -1,0 +1,5 @@
+runpod==1.7.9
+httpx>=0.27,<1
+torch>=2.8
+sglang[all]>=0.4
+huggingface_hub>=0.25
