@@ -79,8 +79,8 @@ jobs:
           REVIEW_SERVER_PORT=8742
           PIPELINE_PUBLIC_URL=http://localhost:8742
           RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
-          RUNPOD_ENDPOINT_ID=${{ secrets.RUNPOD_ENDPOINT_ID }}
           RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_H3_POD_ID=${{ secrets.RUNPOD_H3_POD_ID }}
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}
@@ -92,6 +92,15 @@ jobs:
           echo "✅ .env created"
           echo "Checking key vars..."
           grep -c "GOOGLE_CLOUD_API_KEY" .env && echo "GOOGLE_CLOUD_API_KEY present"
+
+      - name: Start MiniMax H3 Pod (if using minimax_h3 provider)
+        if: secrets.RUNPOD_H3_POD_ID != ''
+        run: |
+          echo "🚀 Starting MiniMax H3 ComfyUI Pod..."
+          PYTHONPATH=src python runpod_server/minimax_h3/pod_manager.py start
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_H3_POD_ID: ${{ secrets.RUNPOD_H3_POD_ID }}
 
       - name: Run pipeline (scheduled — one video)
         if: github.event_name == 'schedule'
@@ -124,6 +133,15 @@ jobs:
           fi
         env:
           PYTHONUNBUFFERED: 1
+
+      - name: Stop MiniMax H3 Pod (always, even on failure)
+        if: always() && secrets.RUNPOD_H3_POD_ID != ''
+        run: |
+          echo "🛑 Stopping MiniMax H3 Pod..."
+          PYTHONPATH=src python runpod_server/minimax_h3/pod_manager.py stop || true
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_H3_POD_ID: ${{ secrets.RUNPOD_H3_POD_ID }}
 
       - name: Upload pipeline logs on failure
         if: failure()

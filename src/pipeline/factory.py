@@ -184,6 +184,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
         asset_store=asset_store,
         content_calendar=content_calendar,
         notifier=notifier,
+        visual_prompt_mode=config.visual_prompt_mode,
     )
 
     # ------------------------------------------------------------------

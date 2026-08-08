@@ -377,6 +377,7 @@ class Orchestrator:
                 style_profile=style_profile,
                 video_id=video_id,
                 script_duration_minutes=self._config.script_duration_minutes,
+                visual_prompt_mode=self._config.visual_prompt_mode,
             ),
         )
 
@@ -428,6 +429,7 @@ class Orchestrator:
                         script=script,
                         edits=edit_instructions,
                         video_id=video_id,
+                        visual_prompt_mode=self._config.visual_prompt_mode,
                     ),
                 )
                 if script.asset_url:
@@ -489,6 +491,7 @@ class Orchestrator:
                 ),
             )
             top_topic = new_topics[0]
+            topics = new_topics  # Update topics list so metadata uses the new topic
 
             try:
                 await self._content_calendar.update_topic(video_id, top_topic.title)
@@ -505,6 +508,7 @@ class Orchestrator:
                     style_profile=style_profile,
                     video_id=video_id,
                     script_duration_minutes=self._config.script_duration_minutes,
+                    visual_prompt_mode=self._config.visual_prompt_mode,
                 ),
             )
             if script.asset_url:
@@ -529,23 +533,37 @@ class Orchestrator:
 
         # ------------------------------------------------------------------ #
         # Stage 4: Narration_Generator → NarrationAsset                       #
+        # Skipped in cinematic mode — H3 generates native voice/audio.        #
         # ------------------------------------------------------------------ #
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 
-        narration: NarrationAsset = await self._run_stage(
-            stage_name="narration_generator",
-            video_id=video_id,
-            run_id=run_id,
-            pre_status=PipelineStatus.NARRATION_READY,
-            coro_factory=lambda: self._narration_generator.generate(
-                script=script,
-                voice_id=self._config.voice_id,
+        narration: Optional[NarrationAsset] = None
+        if self._config.visual_prompt_mode != "cinematic":
+            narration = await self._run_stage(
+                stage_name="narration_generator",
                 video_id=video_id,
-            ),
-        )
+                run_id=run_id,
+                pre_status=PipelineStatus.NARRATION_READY,
+                coro_factory=lambda: self._narration_generator.generate(
+                    script=script,
+                    voice_id=self._config.voice_id,
+                    video_id=video_id,
+                ),
+            )
+        else:
+            logger.info(
+                "Orchestrator: cinematic mode — skipping TTS narration for video_id=%s",
+                video_id,
+            )
+            self._emit_log(
+                event_type="stage_transition",
+                stage_name="narration_generator",
+                message="Skipped (cinematic mode — H3 native audio)",
+                video_id=video_id,
+            )
 
         # Update Notion with narration Drive URL
-        if narration.asset_url:
+        if narration and narration.asset_url:
             try:
                 await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
             except Exception as exc:  # noqa: BLE001
@@ -623,7 +641,7 @@ class Orchestrator:
             lnk for lnk in [
                 visual.mp4_url, visual.thumbnail_url,
                 script.asset_url,
-                narration.asset_url,
+                narration.asset_url if narration else None,
             ] if lnk
         ]
         # Gate 2: trigger and enter WAIT state.
@@ -1073,6 +1091,7 @@ class Orchestrator:
                         style_profile=style_profile,  # type: ignore[arg-type]
                         video_id=video_id,
                         script_duration_minutes=self._config.script_duration_minutes,
+                        visual_prompt_mode=self._config.visual_prompt_mode,
                     ),
                 )
                 await self._update_calendar_status(
@@ -1683,6 +1702,7 @@ class Orchestrator:
                 style_profile=style_profile,
                 video_id=video_id,
                 script_duration_minutes=self._config.script_duration_minutes,
+                visual_prompt_mode=self._config.visual_prompt_mode,
             ),
         )
 
@@ -1715,21 +1735,23 @@ class Orchestrator:
         # Advance past gate (batch mode: gates do not block generation).
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPT_APPROVED, run_id)
 
-        # Stage: Narration_Generator
-        narration: NarrationAsset = await self._run_stage(
-            stage_name="narration_generator",
-            video_id=video_id,
-            run_id=run_id,
-            pre_status=PipelineStatus.NARRATION_READY,
-            coro_factory=lambda: self._narration_generator.generate(
-                script=script,
-                voice_id=self._config.voice_id,
+        # Stage: Narration_Generator (skipped in cinematic mode)
+        narration: Optional[NarrationAsset] = None
+        if self._config.visual_prompt_mode != "cinematic":
+            narration = await self._run_stage(
+                stage_name="narration_generator",
                 video_id=video_id,
-            ),
-        )
+                run_id=run_id,
+                pre_status=PipelineStatus.NARRATION_READY,
+                coro_factory=lambda: self._narration_generator.generate(
+                    script=script,
+                    voice_id=self._config.voice_id,
+                    video_id=video_id,
+                ),
+            )
 
         # Update Notion with narration Drive URL
-        if getattr(narration, "asset_url", None):
+        if narration and narration.asset_url:
             try:
                 await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
             except Exception as exc:  # noqa: BLE001
