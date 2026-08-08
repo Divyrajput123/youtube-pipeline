@@ -1300,27 +1300,13 @@ class Publisher:
                         )
 
                         # Also set the thumbnail on the Short via YouTube API.
-                        # thumbnails.set works for Shorts same as regular videos.
-                        try:
-                            import tempfile as _tf2  # noqa: PLC0415
-                            import pathlib as _pl2  # noqa: PLC0415
-                            with _tf2.NamedTemporaryFile(suffix=".jpg", delete=False) as _tfw:
-                                _tfw.write(shorts_thumb_bytes)
-                                _local_thumb = _tfw.name
-                            await self._yt.set_thumbnail(
-                                youtube_video_id=result["id"],
-                                thumbnail_path=_local_thumb,
-                            )
-                            _pl2.Path(_local_thumb).unlink(missing_ok=True)
-                            logger.info(
-                                "Publisher: Shorts thumbnail set on YouTube for %s",
-                                result["id"],
-                            )
-                        except Exception as yt_thumb_exc:
-                            logger.warning(
-                                "Publisher: could not set Shorts thumbnail on YouTube for %s "
-                                "(non-fatal): %s", result["id"], yt_thumb_exc,
-                            )
+                        # NOTE: thumbnails.set is silently ignored by YouTube for Shorts —
+                        # it must be set manually in Studio. Skipping the API call.
+                        logger.info(
+                            "Publisher: Shorts thumbnail saved to Drive for video_id=%s. "
+                            "Set it manually in YouTube Studio → Edit → Thumbnail.",
+                            video_id,
+                        )
 
                 except Exception as thumb_exc:
                     logger.warning(

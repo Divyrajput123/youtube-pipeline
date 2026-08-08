@@ -306,7 +306,15 @@ class ViewmaxMCPClient:
             if not self._h3_pod_id and not (self._h3_endpoint_id and self._h3_api_key):
                 return _generate_placeholder_clip_jpeg(prompt)
             try:
-                return await self._call_minimax_h3(prompt, duration_seconds=duration_seconds, seed=seed)
+                # Pick up any first_frame set by _generate_clips_cinematic for chaining
+                _first_frame = getattr(self, "_next_first_frame", None)
+                self._next_first_frame = None  # consume it so it doesn't leak to next call
+                return await self._call_minimax_h3(
+                    prompt,
+                    duration_seconds=duration_seconds,
+                    seed=seed,
+                    first_frame_filename=_first_frame,
+                )
             except Exception as exc:
                 logger.warning(
                     "ViewmaxMCPClient: MiniMax H3 failed ('%s'): %s — using placeholder.",
@@ -392,19 +400,136 @@ class ViewmaxMCPClient:
 
         raise RuntimeError(f"Kling task {task_id} timed out after 10 minutes")
 
-    async def _call_minimax_h3(self, prompt: str, duration_seconds: int = 10, seed: int = -1) -> bytes:
+    async def _extract_last_frame(self, mp4_bytes: bytes) -> Optional[bytes]:
+        """Extract the last frame of an MP4 clip as JPEG bytes using ffmpeg.
+
+        Uses the second-to-last second rather than the very last frame to avoid
+        motion blur or partial frames that could confuse H3's first_frame anchor.
+
+        Args:
+            mp4_bytes: Raw MP4 bytes of the generated clip.
+
+        Returns:
+            JPEG bytes of the extracted frame, or None if extraction fails.
+        """
+        import shutil as _sh  # noqa: PLC0415
+        import subprocess as _sp  # noqa: PLC0415
+        import tempfile as _tf  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        ffmpeg_bin = _sh.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg" or "ffmpeg"
+        ffprobe_bin = _sh.which("ffprobe") or "/opt/homebrew/bin/ffprobe" or "ffprobe"
+
+        try:
+            with _tf.TemporaryDirectory() as tmpdir:
+                tmp = _Path(tmpdir)
+                clip_path = tmp / "clip.mp4"
+                frame_path = tmp / "frame.jpg"
+                clip_path.write_bytes(mp4_bytes)
+
+                # Get clip duration
+                probe = _sp.run(
+                    [ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", str(clip_path)],
+                    capture_output=True, timeout=15,
+                )
+                duration = float(probe.stdout.strip()) if probe.returncode == 0 else 15.0
+
+                # Extract frame at 80% duration — well into the action but before final blur
+                seek_time = max(0.0, duration * 0.80)
+
+                result = _sp.run(
+                    [ffmpeg_bin, "-y",
+                     "-ss", f"{seek_time:.3f}",
+                     "-i", str(clip_path),
+                     "-frames:v", "1",
+                     "-q:v", "2",
+                     str(frame_path)],
+                    capture_output=True, timeout=30,
+                )
+
+                if result.returncode != 0 or not frame_path.exists():
+                    logger.warning(
+                        "ViewmaxMCPClient: last-frame extraction failed: %s",
+                        result.stderr[-200:].decode("utf-8", errors="replace"),
+                    )
+                    return None
+
+                frame_bytes = frame_path.read_bytes()
+                logger.info(
+                    "ViewmaxMCPClient: extracted last frame at %.1fs (%d bytes JPEG)",
+                    seek_time, len(frame_bytes),
+                )
+                return frame_bytes
+
+        except Exception as exc:
+            logger.warning("ViewmaxMCPClient: last-frame extraction error: %s", exc)
+            return None
+
+    async def _upload_frame_to_comfyui(
+        self,
+        frame_jpeg_bytes: bytes,
+        comfyui_url: str,
+        filename: str = "last_frame.jpg",
+    ) -> Optional[str]:
+        """Upload a JPEG frame to ComfyUI's /upload/image endpoint.
+
+        ComfyUI stores uploaded images in its input folder and returns the
+        actual filename (may be deduplicated). That filename is what the
+        workflow JSON must reference.
+
+        Args:
+            frame_jpeg_bytes: Raw JPEG bytes to upload.
+            comfyui_url: Base ComfyUI URL.
+            filename: Suggested filename (ComfyUI may rename it).
+
+        Returns:
+            The filename as stored by ComfyUI (use in workflow JSON), or None on failure.
+        """
+        import httpx  # noqa: PLC0415
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{comfyui_url}/upload/image",
+                    files={"image": (filename, frame_jpeg_bytes, "image/jpeg")},
+                    data={"type": "input", "overwrite": "true"},
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "ViewmaxMCPClient: frame upload failed (HTTP %d): %s",
+                        resp.status_code, resp.text[:200],
+                    )
+                    return None
+
+                data = resp.json()
+                stored_name = data.get("name", filename)
+                subfolder = data.get("subfolder", "")
+                logger.info(
+                    "ViewmaxMCPClient: uploaded last frame as '%s' (subfolder='%s')",
+                    stored_name, subfolder,
+                )
+                return stored_name
+
+        except Exception as exc:
+            logger.warning("ViewmaxMCPClient: frame upload error: %s", exc)
+            return None
+
+    async def _call_minimax_h3(self, prompt: str, duration_seconds: int = 10, seed: int = -1, first_frame_filename: Optional[str] = None) -> bytes:
         """Generate video via MiniMax H3 on a ComfyUI Pod.
 
         Submits the exact ComfyUI workflow (API format) to the ComfyUI HTTP API,
         waits for completion, and downloads the generated MP4.
 
-        The Pod URL is derived from RUNPOD_H3_POD_ID:
-            https://{pod_id}-8188.proxy.runpod.net
-
         Args:
             prompt: Scene description for video generation.
             duration_seconds: Clip duration (5-15 seconds, default 10).
             seed: Random seed (-1 for random).
+            first_frame_filename: Optional filename of a JPEG previously uploaded
+                to ComfyUI's input folder via _upload_frame_to_comfyui. When set,
+                the workflow uses MiniMaxH3ImageToVideo's first_frame input so the
+                generated clip visually continues from that frame (last-frame chaining).
+                When None, T2V mode is used (no visual anchor).
 
         Returns:
             MP4 bytes of the generated video clip.
@@ -423,8 +548,9 @@ class ViewmaxMCPClient:
             seed = _random.randint(0, 2**53 - 1)
 
         logger.info(
-            "ViewmaxMCPClient: MiniMax H3 (ComfyUI) generating '%s' duration=%ds seed=%d",
+            "ViewmaxMCPClient: MiniMax H3 (ComfyUI) generating '%s' duration=%ds seed=%d%s",
             clean_prompt[:80], duration, seed,
+            f" [chaining from '{first_frame_filename}']" if first_frame_filename else " [T2V mode]",
         )
 
         # Build ComfyUI Pod URL from pod ID
@@ -556,7 +682,8 @@ class ViewmaxMCPClient:
                     "height": ["115", 1],
                     "length": length,
                     "clip": ["105:13", 0],
-                    "vae": ["105:11", 0]
+                    "vae": ["105:11", 0],
+                    **({"first_frame": [first_frame_filename, 0]} if first_frame_filename else {}),
                 },
                 "class_type": "MiniMaxH3ImageToVideo"
             }
@@ -1551,33 +1678,34 @@ async def _generate_ai_thumbnail(
     try:
         client = build_claude_client()
 
-        meta_prompt = f"""You are a YouTube thumbnail designer who creates prompts for AI image generators (Ideogram/DALL-E/Flux).
+        meta_prompt = f"""You are a YouTube thumbnail designer who creates prompts for AI image generators (Ideogram).
 
 VIDEO TITLE: {title}
-SCRIPT CONTENT (first 800 chars):
-{script_body[:800]}
+FULL SCRIPT:
+{script_body}
 
-Generate a SINGLE detailed image generation prompt for a 1280×720 YouTube thumbnail that will maximize CTR (click-through rate). 
+Generate a SINGLE detailed image generation prompt for a 1280×720 YouTube thumbnail that will maximize CTR (click-through rate).
 
 REQUIREMENTS:
-1. DESCRIBE THE ACTUAL CHARACTERS from the script by their appearance (costume, colors, powers, body type) — NEVER use character names like "Superman" or "Goku"
-2. Specify exact COMPOSITION: which characters are on left vs right, what % of frame they fill, camera angle
-3. Include DRAMATIC LIGHTING specific to the scene (not always "orange and blue" — match the mood)
-4. Specify the BACKGROUND that matches the script's setting (multiverse portals, destroyed city, cosmic space, etc.)
-5. Add TEXT INSTRUCTIONS: specify 1-2 lines of bold clickbait text, where it goes, and how it should look (large, outlined, glowing)
-6. Mention: full-bleed edge-to-edge, no borders, no white space, characters filling 85-90% of frame
-7. Designed for MOBILE visibility (large faces, high contrast, readable at small sizes)
-8. Style: photorealistic, cinematic, NOT cartoon, NOT anime, Hollywood movie poster quality
+1. DESCRIBE THE ACTUAL CHARACTERS from the script by their appearance (costume, colors, powers, body type) — NEVER use copyrighted character names
+2. COMPOSITION: characters on left and right sides, facing each other, filling 80-90% of frame, low-angle or eye-level dramatic perspective
+3. STYLE: Match the content — for anime/manga/superhero topics use high-quality anime key visual style (like Jujutsu Kaisen, Demon Slayer, Attack on Titan). For live-action topics use cinematic photorealistic style. NEVER generic.
+4. BACKGROUND: Destroyed/dramatic environment matching the script (ruined shrine, destroyed city, space, etc.), NOT plain gradients
+5. LIGHTING: Dramatic rim lighting, energy glow from characters illuminating the scene, deep shadows, high contrast
+6. ENERGY EFFECTS: Glowing auras, energy blasts, particle effects, sparks, motion blur — make it feel explosive
+7. TEXT: Specify large bold ALL-CAPS text in the upper portion of the image that does NOT cover character faces:
+   - Main text (huge, white with thick dark outline): a 2-4 word punchy question or statement from the video topic
+   - Sub-text (smaller, red or yellow): a 2-4 word hook
+8. Full-bleed edge-to-edge, no borders, no watermarks, no logos, designed for mobile visibility
 
 TEXT RULES:
-- Line 1: 2-4 word SHOCKING statement (ALL CAPS, e.g. "DOOM IS HERE!", "HE'S BACK!", "THEY LOSE!")  
-- Line 2: 2-4 word hook underneath (e.g. "Everything Changes", "Nobody Expected This")
-- Text must be EXTREMELY large, thick, with dark outline and cinematic glow
-- Place text where it won't cover character faces
+- Derive the text from the actual VIDEO TITLE — make it feel like a direct teaser for this specific video
+- Text must be EXTREMELY large, Impact-font style, bold, with thick dark outline and slight glow
+- Upper-left or upper area placement so character faces are visible
 
-Output ONLY the image generation prompt (250-400 words). No explanations, no markdown."""
+Output ONLY the image generation prompt (300-450 words). No explanations, no markdown."""
 
-        result = await client.complete(meta_prompt, max_tokens=600)
+        result = await client.complete(meta_prompt, max_tokens=800)
         image_prompt = result.strip().strip('"\'')
         logger.info("Claude thumbnail prompt generated: %s", image_prompt[:120])
 
@@ -1998,8 +2126,7 @@ class Visual_Generator:
 
             # ---- 5. Generate thumbnail — AI image + text overlay -----------
             video_title = segments[0].title if segments else video_id
-            script_body = segments[0].body if segments else ""
-            thumbnail_bytes = await _generate_ai_thumbnail(video_title, script_body) or \
+            thumbnail_bytes = await _generate_ai_thumbnail(video_title, script.content) or \
                               _make_thumbnail_jpeg(style_profile, video_title)
 
             # ---- 6. Determine version and upload --------------------------
@@ -2128,13 +2255,34 @@ class Visual_Generator:
             )
             prompts.append(prompt)
 
-        # Generate clips one at a time — ComfyUI pod has one GPU
+        # Generate clips one at a time — ComfyUI pod has one GPU.
+        # Last-frame chaining: extract the last frame of clip N and pass it
+        # as first_frame to clip N+1 so H3 anchors visually to the previous shot.
         results: list[ClipResult] = []
+        last_frame_filename: Optional[str] = None  # None for clip 1 (pure T2V)
+
+        # Need the ComfyUI URL to upload frames — derive it here
+        _pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
+        _comfyui_url = f"https://{_pod_id}-8188.proxy.runpod.net" if _pod_id else ""
+
         for clip_idx, (segment, prompt) in enumerate(zip(segments, prompts)):
             logger.info(
-                "Visual_Generator [cinematic]: clip %d/%d — %s",
+                "Visual_Generator [cinematic]: clip %d/%d — %s%s",
                 clip_idx + 1, total_clips, segment.title[:50],
+                f" [chaining from clip {clip_idx}]" if last_frame_filename else " [T2V anchor]",
             )
+
+            # Inject first_frame into the viewmax client call for this clip
+            # We call _generate_single_clip which calls self._viewmax.generate_clip
+            # which calls _call_minimax_h3 — we need to pass first_frame_filename through.
+            # _generate_single_clip → generate_clip → _call_minimax_h3
+            # The cleanest path: temporarily set first_frame on the client before calling.
+            # Use a context-safe approach: pass via a per-call attribute.
+            if hasattr(self._viewmax, "_call_minimax_h3"):
+                self._viewmax._next_first_frame = last_frame_filename
+            else:
+                self._viewmax._next_first_frame = None
+
             result = await self._generate_single_clip(
                 segment_index=clip_idx,
                 segment=segment,
@@ -2143,6 +2291,41 @@ class Visual_Generator:
                 seed=-1,
             )
             results.append(result)
+
+            # If clip succeeded and we have a ComfyUI URL, extract last frame for next clip
+            last_frame_filename = None  # reset — don't chain from a failed clip
+            if (
+                not result.is_fallback
+                and len(result.mp4_bytes) > 10_000
+                and _comfyui_url
+                and clip_idx < total_clips - 1  # no need to chain after last clip
+            ):
+                frame_jpeg = await self._viewmax._extract_last_frame(result.mp4_bytes)
+                if frame_jpeg:
+                    stored_name = await self._viewmax._upload_frame_to_comfyui(
+                        frame_jpeg,
+                        _comfyui_url,
+                        filename=f"chain_frame_{clip_idx:02d}.jpg",
+                    )
+                    if stored_name:
+                        last_frame_filename = stored_name
+                        logger.info(
+                            "Visual_Generator [cinematic]: clip %d last frame uploaded as '%s' "
+                            "→ will anchor clip %d",
+                            clip_idx + 1, stored_name, clip_idx + 2,
+                        )
+                    else:
+                        logger.warning(
+                            "Visual_Generator [cinematic]: clip %d frame upload failed "
+                            "— clip %d will use T2V mode",
+                            clip_idx + 1, clip_idx + 2,
+                        )
+                else:
+                    logger.warning(
+                        "Visual_Generator [cinematic]: clip %d frame extraction failed "
+                        "— clip %d will use T2V mode",
+                        clip_idx + 1, clip_idx + 2,
+                    )
 
         return results
 
