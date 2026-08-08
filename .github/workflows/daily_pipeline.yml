@@ -37,6 +37,9 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours — serial H3 generation: 12 clips × 4 min = ~1hr + overhead
+    env:
+      # Job-level env so if: conditions can evaluate these before steps run
+      RUNPOD_H3_POD_ID: ${{ secrets.RUNPOD_H3_POD_ID }}
 
     steps:
       - name: Checkout repository
@@ -73,41 +76,42 @@ jobs:
           fi
           echo "📺 Visual prompt mode: $VISUAL_MODE"
 
-          cat > .env <<EOF
-          PIPELINE_MODE=production
-          VISUAL_PROMPT_MODE=${VISUAL_MODE}
-          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-          ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
-          NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}
-          NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}
-          PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}
-          TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}
-          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-          LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}
-          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          GOOGLE_DRIVE_FOLDER_ID=${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-          KLING_API_KEY=${{ secrets.KLING_API_KEY }}
-          KLING_MODEL=${{ secrets.KLING_MODEL || 'kling-v1-6' }}
-          IDEOGRAM_API_KEY=${{ secrets.IDEOGRAM_API_KEY }}
-          NGROK_AUTH_TOKEN=${{ secrets.NGROK_AUTH_TOKEN }}
-          NGROK_ENABLED=true
-          REVIEW_SERVER_PORT=8742
-          PIPELINE_PUBLIC_URL=http://localhost:8742
-          RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
-          RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}
-          RUNPOD_H3_POD_ID=${{ secrets.RUNPOD_H3_POD_ID }}
-          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
-          INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
-          INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}
-          FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}
-          FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}
-          GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}
-          EOF
-          sed -i 's/^[[:space:]]*//' .env
-          echo "✅ .env created"
-          echo "Checking key vars..."
+          cat > .env <<'ENVEOF'
+PIPELINE_MODE=production
+ENVEOF
+          # Append each secret on its own line — no leading whitespace, no sed needed
+          printf '%s\n' \
+            "VISUAL_PROMPT_MODE=${VISUAL_MODE}" \
+            "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" \
+            "ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}" \
+            "NOTION_AUTH_TOKEN=${{ secrets.NOTION_AUTH_TOKEN }}" \
+            "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}" \
+            "PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}" \
+            "TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}" \
+            "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
+            "LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}" \
+            "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" \
+            "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" \
+            "GOOGLE_REFRESH_TOKEN=${{ secrets.GOOGLE_REFRESH_TOKEN }}" \
+            "GOOGLE_DRIVE_FOLDER_ID=${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}" \
+            "KLING_API_KEY=${{ secrets.KLING_API_KEY }}" \
+            "KLING_MODEL=${{ secrets.KLING_MODEL || 'kling-v1-6' }}" \
+            "IDEOGRAM_API_KEY=${{ secrets.IDEOGRAM_API_KEY }}" \
+            "NGROK_AUTH_TOKEN=${{ secrets.NGROK_AUTH_TOKEN }}" \
+            "NGROK_ENABLED=true" \
+            "REVIEW_SERVER_PORT=8742" \
+            "PIPELINE_PUBLIC_URL=http://localhost:8742" \
+            "RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}" \
+            "RUNPOD_API_KEY=${{ secrets.RUNPOD_API_KEY }}" \
+            "RUNPOD_H3_POD_ID=${{ secrets.RUNPOD_H3_POD_ID }}" \
+            "SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}" \
+            "INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN }}" \
+            "INSTAGRAM_ACCOUNT_ID=${{ secrets.INSTAGRAM_ACCOUNT_ID }}" \
+            "FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}" \
+            "FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}" \
+            "GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}" \
+            >> .env
+          echo "✅ .env created ($(wc -l < .env) lines)"
           grep -c "GOOGLE_CLOUD_API_KEY" .env && echo "GOOGLE_CLOUD_API_KEY present"
 
       - name: Start MiniMax H3 Pod (if using minimax_h3 provider)

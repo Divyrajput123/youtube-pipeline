@@ -1107,26 +1107,42 @@ class Orchestrator:
         if resume_from in {"narration_generator", "visual_generator",
                            "metadata_generator", "publisher"}:
             if resume_from == "narration_generator":
-                narration = await self._run_stage(
-                    stage_name="narration_generator",
-                    video_id=video_id,
-                    run_id=run_id,
-                    pre_status=PipelineStatus.NARRATION_READY,
-                    coro_factory=lambda: self._narration_generator.generate(
-                        script=script,  # type: ignore[arg-type]
-                        voice_id=self._config.voice_id,
+                # Skip TTS in cinematic mode — no MP3 is generated or stored
+                if self._config.visual_prompt_mode == "cinematic":
+                    logger.info(
+                        "resume_pipeline: cinematic mode — skipping TTS narration for video_id=%s",
+                        video_id,
+                    )
+                    narration = None  # type: ignore[assignment]
+                    # Advance to visual generator stage
+                    await self._update_calendar_status(
+                        video_id, PipelineStatus.GENERATING_VISUALS, run_id
+                    )
+                else:
+                    narration = await self._run_stage(
+                        stage_name="narration_generator",
                         video_id=video_id,
-                    ),
-                )
-                # Update Notion with narration Drive URL
-                if getattr(narration, "asset_url", None):
-                    try:
-                        await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("resume: could not update narration_url for %s: %s", video_id, exc)
+                        run_id=run_id,
+                        pre_status=PipelineStatus.NARRATION_READY,
+                        coro_factory=lambda: self._narration_generator.generate(
+                            script=script,  # type: ignore[arg-type]
+                            voice_id=self._config.voice_id,
+                            video_id=video_id,
+                        ),
+                    )
+                    # Update Notion with narration Drive URL
+                    if getattr(narration, "asset_url", None):
+                        try:
+                            await self._content_calendar.update_asset_link(video_id, "narration", narration.asset_url)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("resume: could not update narration_url for %s: %s", video_id, exc)
             else:
-                assert narration_bytes is not None
-                narration = _reconstruct_narration(video_id)
+                # Resuming from a later stage — reconstruct or None for cinematic
+                if self._config.visual_prompt_mode == "cinematic":
+                    narration = None  # type: ignore[assignment]
+                else:
+                    assert narration_bytes is not None
+                    narration = _reconstruct_narration(video_id)
 
         # Stage: visual_generator
         if resume_from in {"visual_generator", "metadata_generator", "publisher"}:

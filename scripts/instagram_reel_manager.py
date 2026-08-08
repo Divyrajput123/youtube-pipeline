@@ -400,14 +400,24 @@ async def _post_reel(asset_store, reel_bytes: bytes, video_id: str) -> tuple[str
     )
 
     # Build API URL
-    drive_id_match = re.search(r"/file/d/([^/]+)", drive_url)
-    gcloud_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
-    if not drive_id_match or not gcloud_key:
-        print(f"   ERROR: Cannot build URL (file_id={bool(drive_id_match)}, key={bool(gcloud_key)})")
+    drive_id_match = re.search(r"/d/([^/]+)/", drive_url)
+    if not drive_id_match:
+        # Try alternate Drive URL format
+        drive_id_match = re.search(r"/file/d/([^/]+)", drive_url)
+    if not drive_id_match:
+        print(f"   ERROR: Cannot extract file ID from Drive URL: {drive_url[:80]}")
         return None
 
     file_id = drive_id_match.group(1)
-    api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={gcloud_key}"
+    # Use get_web_content_link for a public direct-download URL.
+    # The googleapis.com/drive/v3 URL requires the file to be publicly shared
+    # AND a valid API key — Instagram's servers cannot satisfy OAuth auth.
+    try:
+        api_url = await asset_store._drive.get_web_content_link(file_id)
+        print(f"   Video public URL obtained via get_web_content_link")
+    except Exception as link_exc:
+        api_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+        print(f"   Video URL fallback ({link_exc}): {api_url[:80]}")
 
     # Wait for CDN propagation (poll until accessible)
     print(f"\n4. Verifying URL accessibility...")
@@ -460,23 +470,30 @@ async def _post_reel(asset_store, reel_bytes: bytes, video_id: str) -> tuple[str
             filename="thumbnail_shorts.jpg",
         )
         if thumb_bytes and len(thumb_bytes) > 1000:
-            # Upload/ensure it's on Drive and get a public URL
+            # Upload/ensure it's on Drive and get a public URL.
+            # IMPORTANT: use get_web_content_link which returns a public
+            # direct-download URL that Instagram's servers can fetch without
+            # authentication. Building the URL manually with GOOGLE_CLOUD_API_KEY
+            # fails because Drive files are not publicly shared by default.
             thumb_drive_url = await asset_store.write(
                 video_id=video_id,
                 subfolder=SubFolder.THUMBNAILS,
                 filename="thumbnail_shorts.jpg",
                 content=thumb_bytes,
             )
-            # Build public API URL for the cover image
-            thumb_id_match = re.search(r"/file/d/([^/]+)", thumb_drive_url)
-            if thumb_id_match and gcloud_key:
-                cover_url = (
-                    f"https://www.googleapis.com/drive/v3/files/"
-                    f"{thumb_id_match.group(1)}?alt=media&key={gcloud_key}"
-                )
-                print(f"   Cover image: thumbnail_shorts.jpg found on Drive")
+            # Extract file ID from Drive URL and get the public download link
+            thumb_id_match = re.search(r"/d/([^/]+)/", thumb_drive_url)
+            if thumb_id_match:
+                file_id = thumb_id_match.group(1)
+                try:
+                    cover_url = await asset_store._drive.get_web_content_link(file_id)
+                    print(f"   Cover image: thumbnail_shorts.jpg → public URL obtained")
+                except Exception as link_exc:
+                    # Fallback: construct direct download URL
+                    cover_url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
+                    print(f"   Cover image: using fallback URL ({link_exc})")
             else:
-                print(f"   Cover image: could not build public URL")
+                print(f"   Cover image: could not extract file ID from Drive URL")
         else:
             print(f"   Cover image: no thumbnail_shorts.jpg found — posting without cover")
     except Exception as cover_exc:

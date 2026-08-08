@@ -414,7 +414,9 @@ class ViewmaxMCPClient:
         import httpx  # noqa: PLC0415
         import random as _random  # noqa: PLC0415
 
-        clean_prompt = self._clean_prompt(prompt)
+        # Pass is_cinematic=True so _clean_prompt uses the dialogue-safe path
+        # regardless of whether the T2VA brief header is present (e.g. parse fallback).
+        clean_prompt = self._clean_prompt(prompt, is_cinematic=self._provider == "minimax_h3")
         duration = max(5, min(15, duration_seconds))
 
         if seed < 0:
@@ -672,7 +674,7 @@ class ViewmaxMCPClient:
         raise RuntimeError(f"H3 ComfyUI prompt {prompt_id} timed out after 30 minutes")
 
     @staticmethod
-    def _clean_prompt(raw_prompt: str) -> str:
+    def _clean_prompt(raw_prompt: str, is_cinematic: bool = False) -> str:
         """Clean the prompt before sending to the video provider.
 
         For MiniMax H3 T2VA briefs the prompt contains structured fields
@@ -681,17 +683,25 @@ class ViewmaxMCPClient:
         model parses for lipsync.  We must NOT strip [Language] tags from
         inside <d>…</d> blocks, or H3 will ignore the dialogue entirely.
 
+        Args:
+            raw_prompt: The raw prompt string.
+            is_cinematic: True when called in cinematic mode — uses the
+                dialogue-safe cleaning path regardless of prompt content.
+                Avoids fragile content-sniffing when the T2VA brief is
+                partially formed (e.g. BEAT parse fallback).
+
         Safe cleanup:
           - Strip pipeline annotation tags like [pause] / [emphasis] that
             appear OUTSIDE <d> blocks.
           - Collapse multiple spaces.
-          - For H3 T2VA briefs (detected by "integrated_multimodal_description"
-            in the prompt) skip truncation — the full brief is required.
+          - For H3 T2VA briefs skip truncation — the full brief is required.
           - For all other providers truncate to 350 chars.
         """
         import re as _re  # noqa: PLC0415
 
-        is_h3_brief = "integrated_multimodal_description" in raw_prompt
+        # Use is_cinematic as the authoritative signal; fall back to content
+        # sniffing only when the flag is not set (backwards compat for tests).
+        is_h3_brief = is_cinematic or ("integrated_multimodal_description" in raw_prompt)
 
         if is_h3_brief:
             # Only strip [pause]/[emphasis]-style tags that are NOT inside <d> tags.
@@ -1002,6 +1012,16 @@ async def _generate_cinematic_t2va_brief(
             "Cinematic brief clip %d/%d: unrecognized BEAT type %r — "
             "falling back to action brief (no dialogue will be generated)",
             clip_num + 1, total_clips, beat_type,
+        )
+
+    # If BEAT is completely absent AND no ACTION text was written either,
+    # the segment is unparseable — raise rather than silently produce a
+    # brief with no meaningful content that H3 will render as mute action.
+    if beat_type == "" and not action_desc and not line1:
+        raise ValueError(
+            f"Unreadable cinematic segment '{title}': BEAT field missing or "
+            f"unparseable and no ACTION/LINE1 fallback available. "
+            f"Segment body: {body[:200]!r}"
         )
 
     # Scene slug from title (e.g. "SCENE 3 — EXT. ROOFTOP - DUSK")
@@ -1580,6 +1600,11 @@ Output ONLY the image generation prompt (250-400 words). No explanations, no mar
 
     # Try Ideogram first (best quality, supports text rendering)
     ideogram_key = os.environ.get("IDEOGRAM_API_KEY", "")
+    if not ideogram_key:
+        logger.warning(
+            "IDEOGRAM_API_KEY not set — falling back to Pollinations for thumbnail. "
+            "Add IDEOGRAM_API_KEY to GitHub Secrets for better quality thumbnails."
+        )
     if ideogram_key:
         try:
             async with httpx.AsyncClient(timeout=90.0) as http_client:
@@ -1939,20 +1964,19 @@ class Visual_Generator:
             visual_prompt_mode=self._visual_prompt_mode,
         )
 
-        # ---- 4. Build per-clip durations (even split within each segment) --
-        # Match cut interval to the provider's native clip duration so we don't
-        # over-generate and waste generation time.
-        # - LTX-Video (runpod): 97 frames @ 25fps = 3.88s
-        # - MiniMax H3:         10s clips (CLIP_DURATION=10)
-        _CUT_EVERY_S: float = float(
-            getattr(self._viewmax, "CLIP_DURATION", 3.88)
-            if hasattr(self._viewmax, "CLIP_DURATION")
-            else 3.88
-        )
+        # ---- 4. Build per-clip durations ----------------------------------------
+        # Cinematic mode: 1 clip per scene, each exactly CLIP_DURATION seconds.
+        # Narration mode: split each segment into clips of CLIP_DURATION each.
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
         per_clip_durations: list[float] = []
-        for seg_dur in segment_durations:
-            n = max(1, round(seg_dur / _CUT_EVERY_S))
-            per_clip_durations.extend([seg_dur / n] * n)
+        if self._visual_prompt_mode == "cinematic":
+            # One clip per scene — use the provider's native clip duration
+            per_clip_durations = [_CLIP_DUR] * len(segments)
+        else:
+            _CUT_EVERY_S: float = _CLIP_DUR
+            for seg_dur in segment_durations:
+                n = max(1, round(seg_dur / _CUT_EVERY_S))
+                per_clip_durations.extend([seg_dur / n] * n)
 
         logger.info(
             "Visual_Generator: %d total clips, durations: %s",
@@ -2036,52 +2060,131 @@ class Visual_Generator:
         script_topic: str = "",
         visual_prompt_mode: str = "narration",
     ) -> list[ClipResult]:
-        """Generate enough YouTube clips to cover every segment fully.
+        """Dispatch clip generation to the mode-specific implementation.
 
-        Target cut rate: one new clip every ~10 seconds.
-        For a 40-second segment that means 4 different YouTube clips,
-        each 10 seconds, no repetition within the segment.
-
-        Different search queries are used for each clip within a segment
-        (varying keywords) so the visual variety matches the narration pacing.
-
-        Clips are generated in parallel batches (up to 5 concurrent) for speed.
-        A 3-minute video with MiniMax H3 (~18 clips @ 10s) runs in ~60-90 min on
-        one pod. LTX-Video (~46 clips @ 3.88s) runs in ~15 min with a serverless endpoint.
+        Each mode has its own independent logic so changes to one cannot
+        accidentally break the other:
+          - narration: splits segments into multiple clips by duration,
+            parallel generation (up to 5 concurrent for cloud APIs, 1 for pod).
+          - cinematic: one clip per screenplay scene, always serial on the pod,
+            T2VA brief prompts with dialogue tags.
         """
-        # Match cut interval to the provider's native clip duration.
-        # LTX-Video: 97 frames @ 25fps = 3.88s. MiniMax H3: 10s clips.
-        _CUT_EVERY_S: float = float(
-            getattr(self._viewmax, "CLIP_DURATION", 3.88)
-            if hasattr(self._viewmax, "CLIP_DURATION")
-            else 3.88
+        if visual_prompt_mode == "cinematic":
+            return await self._generate_clips_cinematic(
+                segments=segments,
+                video_id=video_id,
+                script_topic=script_topic,
+            )
+        return await self._generate_clips_narration(
+            segments=segments,
+            video_id=video_id,
+            segment_durations=segment_durations,
+            script_topic=script_topic,
         )
 
-        # Concurrency limit:
-        # - minimax_h3 on a single ComfyUI pod: serial (1 at a time) — the pod
-        #   has one GPU and queues jobs. Firing 12 concurrent requests all hit
-        #   the 15-min timeout before the queue drains, causing placeholders.
-        # - kling: 5 concurrent (cloud API handles parallelism)
-        # - runpod serverless: 5 concurrent (multiple workers)
-        provider = getattr(self._viewmax, "_provider", "kling")
-        _MAX_CONCURRENT: int = 1 if provider == "minimax_h3" else 5
+    # ------------------------------------------------------------------
+    # Cinematic clip generation — one clip per screenplay scene
+    # ------------------------------------------------------------------
 
-        results: list[ClipResult] = []
+    async def _generate_clips_cinematic(
+        self,
+        segments: list[_Segment],
+        video_id: str,
+        script_topic: str = "",
+    ) -> list[ClipResult]:
+        """Generate one clip per screenplay scene using T2VA briefs.
 
-        # Generate dynamic character descriptions from the script topic — called
-        # once per video so all clips share consistent character descriptions.
+        Rules:
+        - 1 clip per ## SCENE segment — the screenplay already wrote the
+          correct number of scenes; over-splitting repeats dialogue fields.
+        - Always serial (MAX_CONCURRENT=1) — single ComfyUI pod, one GPU.
+        - No stagger delay needed since generation is already sequential.
+        - Character descriptions generated once and shared across all clips.
+        """
+        total_clips = len(segments)
+
+        # Character descriptions — generated once, shared across all scenes
         script_body = segments[0].body if segments else ""
         character_descs = await _generate_character_descriptions(script_topic, script_body)
 
-        # Calculate total clips across all segments for scene state continuity
-        total_clips_all_segments = sum(
-            max(1, round((segment_durations[i] if segment_durations and i < len(segment_durations) else 30.0) / _CUT_EVERY_S))
-            for i in range(len(segments))
+        logger.info(
+            "Visual_Generator [cinematic]: generating %d clips (1 per scene, serial)",
+            total_clips,
         )
 
-        # Build a list of all clip tasks with their metadata
+        # Build T2VA prompts sequentially (ordering matters for scene continuity)
+        prompts: list[str] = []
+        for clip_idx, segment in enumerate(segments):
+            scene_state = {
+                "global_clip_num": clip_idx,
+                "total_global_clips": total_clips,
+            }
+            prompt = await _generate_video_prompt_with_claude(
+                segment, clip_num=0, total_clips=1,
+                scene_state=scene_state,
+                script_topic=script_topic,
+                character_descs=character_descs,
+                visual_prompt_mode="cinematic",
+            )
+            prompts.append(prompt)
+
+        # Generate clips one at a time — ComfyUI pod has one GPU
+        results: list[ClipResult] = []
+        for clip_idx, (segment, prompt) in enumerate(zip(segments, prompts)):
+            logger.info(
+                "Visual_Generator [cinematic]: clip %d/%d — %s",
+                clip_idx + 1, total_clips, segment.title[:50],
+            )
+            result = await self._generate_single_clip(
+                segment_index=clip_idx,
+                segment=segment,
+                prompt=prompt,
+                video_id=video_id,
+                seed=-1,
+            )
+            results.append(result)
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Narration clip generation — multiple clips per segment by duration
+    # ------------------------------------------------------------------
+
+    async def _generate_clips_narration(
+        self,
+        segments: list[_Segment],
+        video_id: str,
+        segment_durations: Optional[list[float]] = None,
+        script_topic: str = "",
+    ) -> list[ClipResult]:
+        """Generate b-roll clips covering the full narration duration.
+
+        Rules:
+        - Split each segment into clips of CLIP_DURATION each based on duration.
+        - Parallel generation: 1 concurrent for minimax_h3 pod, 5 for cloud APIs.
+        - 2s stagger between launches to avoid thundering-herd on the pod.
+        - Character descriptions generated once, shared across all clips for
+          visual consistency.
+        """
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
+        provider = getattr(self._viewmax, "_provider", "kling")
+        _MAX_CONCURRENT: int = 1 if provider == "minimax_h3" else 5
+
+        # Character descriptions — generated once, shared across all clips
+        script_body = segments[0].body if segments else ""
+        character_descs = await _generate_character_descriptions(script_topic, script_body)
+
+        # Build clip task list — one entry per clip to generate
         clip_tasks: list[dict] = []
         global_clip_num = 0
+
+        total_clips_all_segments = sum(
+            max(1, round(
+                (segment_durations[i] if segment_durations and i < len(segment_durations) else 30.0)
+                / _CLIP_DUR
+            ))
+            for i in range(len(segments))
+        )
 
         for seg_idx, segment in enumerate(segments):
             seg_duration = (
@@ -2089,13 +2192,11 @@ class Visual_Generator:
                 if segment_durations and seg_idx < len(segment_durations)
                 else 30.0
             )
-            n_clips = max(1, round(seg_duration / _CUT_EVERY_S))
-
+            n_clips = max(1, round(seg_duration / _CLIP_DUR))
             logger.info(
-                "Visual_Generator: segment '%s' %.1fs → %d clips",
+                "Visual_Generator [narration]: segment '%s' %.1fs → %d clips",
                 segment.title, seg_duration, n_clips,
             )
-
             for clip_num in range(n_clips):
                 clip_tasks.append({
                     "seg_idx": seg_idx,
@@ -2108,11 +2209,11 @@ class Visual_Generator:
                 global_clip_num += 1
 
         logger.info(
-            "Visual_Generator: generating %d clips in parallel (max %d concurrent)",
+            "Visual_Generator [narration]: generating %d clips (max %d concurrent)",
             len(clip_tasks), _MAX_CONCURRENT,
         )
 
-        # Generate prompts first (sequential — uses Claude, needs ordering context)
+        # Build prompts sequentially (Claude needs ordering context)
         prompts: list[str] = []
         for task in clip_tasks:
             scene_state = {
@@ -2122,19 +2223,17 @@ class Visual_Generator:
             prompt = await _generate_video_prompt_with_claude(
                 task["segment"], task["clip_num"], task["n_clips"],
                 scene_state=scene_state,
-                script_topic=script_topic, character_descs=character_descs,
-                visual_prompt_mode=visual_prompt_mode,
+                script_topic=script_topic,
+                character_descs=character_descs,
+                visual_prompt_mode="narration",
             )
             prompts.append(prompt)
 
         # Generate clips in parallel batches using semaphore
-        # Stagger launches by 2s to let RunPod workers spin up gradually
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
         async def _gen_with_limit(idx: int) -> ClipResult:
-            # Stagger: wait idx * 2 seconds before acquiring semaphore
-            # This prevents all 10 requests hitting at the exact same moment
-            await asyncio.sleep(idx * 2.0)
+            await asyncio.sleep(idx * 2.0)  # stagger to avoid thundering herd
             async with semaphore:
                 return await self._generate_single_clip(
                     segment_index=clip_tasks[idx]["seg_idx"],
@@ -2144,13 +2243,10 @@ class Visual_Generator:
                     seed=-1,
                 )
 
-        # Fire all clip generations concurrently (semaphore limits parallelism)
         clip_results = await asyncio.gather(
             *[_gen_with_limit(i) for i in range(len(clip_tasks))]
         )
-
-        results = list(clip_results)
-        return results
+        return list(clip_results)
 
     async def _generate_single_clip(
         self,
@@ -2414,6 +2510,14 @@ class Visual_Generator:
 
         output_path = tmp_path / "output.mp4"
         n_clips = len(clip_paths)
+
+        # Guard: duration list must match clip list exactly.
+        # A mismatch causes silent 3-second fallback clips in ffmpeg — hard to debug.
+        if len(segment_durations) != n_clips:
+            raise VisualGeneratorError(
+                f"Duration list length {len(segment_durations)} != clip list length {n_clips} "
+                f"for video_id={video_id}. This is a bug in clip/duration calculation."
+            )
 
         # Build ffmpeg argument list — try common install locations
         import shutil as _shutil  # noqa: PLC0415

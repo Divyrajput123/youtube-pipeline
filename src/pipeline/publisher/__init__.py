@@ -1260,10 +1260,10 @@ class Publisher:
                     result["id"], video_id, schedule_info,
                 )
 
-                # 5. Generate Shorts thumbnail (9:16) and save to Drive for Instagram Reels
-                # NOTE: YouTube Shorts API does not support custom thumbnails via API —
-                # they must be set manually in YouTube Studio. We still generate and save
-                # the thumbnail so the Instagram Reel Manager can use it as a cover image.
+                # 5. Set Shorts thumbnail via YouTube Data API.
+                # The thumbnails.set endpoint works for Shorts (same as regular videos).
+                # Note: on mobile Shorts feed, YouTube may override with an auto-selected
+                # frame — but the thumbnail IS applied for search results and desktop view.
                 try:
                     from pipeline.thumbnail_generator import generate_shorts_thumbnail  # noqa: PLC0415
                     from pipeline.models import SubFolder  # noqa: PLC0415
@@ -1299,13 +1299,36 @@ class Publisher:
                             video_id,
                         )
 
+                        # Also set the thumbnail on the Short via YouTube API.
+                        # thumbnails.set works for Shorts same as regular videos.
+                        try:
+                            import tempfile as _tf2  # noqa: PLC0415
+                            import pathlib as _pl2  # noqa: PLC0415
+                            with _tf2.NamedTemporaryFile(suffix=".jpg", delete=False) as _tfw:
+                                _tfw.write(shorts_thumb_bytes)
+                                _local_thumb = _tfw.name
+                            await self._yt.set_thumbnail(
+                                youtube_video_id=result["id"],
+                                thumbnail_path=_local_thumb,
+                            )
+                            _pl2.Path(_local_thumb).unlink(missing_ok=True)
+                            logger.info(
+                                "Publisher: Shorts thumbnail set on YouTube for %s",
+                                result["id"],
+                            )
+                        except Exception as yt_thumb_exc:
+                            logger.warning(
+                                "Publisher: could not set Shorts thumbnail on YouTube for %s "
+                                "(non-fatal): %s", result["id"], yt_thumb_exc,
+                            )
+
                 except Exception as thumb_exc:
                     logger.warning(
                         "Publisher: Shorts thumbnail generation/set failed for %s (non-fatal): %s",
                         video_id, thumb_exc,
                     )
 
-                return short_video_id
+                return result["id"]
 
         except Exception as exc:
             logger.warning(
