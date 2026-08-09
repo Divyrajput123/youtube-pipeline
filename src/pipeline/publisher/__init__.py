@@ -296,7 +296,10 @@ class YouTubeDataAPIClient:
                         "tags": tags[:500],
                         "categoryId": "24",       # Entertainment (suits superhero/animation content)
                     },
-                    "status": {"privacyStatus": privacy},
+                    "status": {
+                        "privacyStatus": privacy,
+                        "madeForKids": False,
+                    },
                 }
                 media = MediaFileUpload(local_path, mimetype="video/mp4", resumable=True)
                 request = self._service.videos().insert(
@@ -947,7 +950,10 @@ def _format_chapters(metadata: MetadataPackage) -> str:
 
 
 def _build_description(metadata: MetadataPackage) -> str:
-    """Combine the base description with formatted chapter markers.
+    """Combine the base description with formatted chapter markers and AI disclosure.
+
+    The AI disclosure is appended to every video to comply with YouTube's policy
+    requiring creators to disclose AI-generated content.
 
     Args:
         metadata: The validated ``MetadataPackage`` for the video.
@@ -955,10 +961,12 @@ def _build_description(metadata: MetadataPackage) -> str:
     Returns:
         Full description string suitable for the YouTube ``snippet.description`` field.
     """
+    _AI_DISCLOSURE = "\n\n🤖 This video was created with the assistance of AI tools."
+
     chapters_block = _format_chapters(metadata)
     if chapters_block:
-        return f"{metadata.description}{chapters_block}"
-    return metadata.description
+        return f"{metadata.description}{chapters_block}{_AI_DISCLOSURE}"
+    return f"{metadata.description}{_AI_DISCLOSURE}"
 
 
 def _unlisted_url(youtube_video_id: str) -> str:
