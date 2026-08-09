@@ -60,16 +60,16 @@ def _build_parser() -> argparse.ArgumentParser:
         description="AI YouTube Content Pipeline — start, batch, or resume a pipeline run.",
     )
     parser.add_argument(
+        "--env-file",
+        metavar="PATH",
+        default=None,
+        help="Path to an additional .env file to load (overrides .env). Use for multi-channel setups.",
+    )
+    parser.add_argument(
         "--config",
         metavar="PATH",
         required=True,
         help="Path to the JSON pipeline configuration file.",
-    )
-    parser.add_argument(
-        "--env-file",
-        metavar="PATH",
-        default=None,
-        help="Path to a custom .env file (for multi-channel support). Overrides the default .env.",
     )
     parser.add_argument(
         "--batch-size",
