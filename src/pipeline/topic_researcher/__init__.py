@@ -220,11 +220,13 @@ class PerplexityMCPClient:
                 "Focus on: classic nursery rhyme themes (animals, colors, numbers, ABCs, shapes), "
                 "seasonal topics kids love (seasons, holidays, nature), "
                 "popular preschool learning themes (counting, letters, body parts, food), "
-                "and fun action songs (jumping, clapping, dancing). "
-                "I want topics that parents search for when looking for kids content on YouTube. "
+                "fun action songs (jumping, clapping, dancing), "
+                "AND kids-friendly superhero/character themes that are popular with toddlers "
+                "(like Spiderman colors, baby versions of popular characters, superhero counting songs). "
+                "I want topics that parents and toddlers search for on YouTube. "
                 "Format: numbered list 1-10, one topic per line, short catchy title (4-8 words max). "
                 "Make titles sing-song friendly like: 'Five Little Ducks Counting Song', "
-                "'Old MacDonald Had a Farm', 'Wheels on the Bus Animals Edition'. "
+                "'Old MacDonald Had a Farm', 'Spiderman Colors for Kids', 'Baby Shark Dance'. "
                 "Write every title entirely in English using standard Latin characters. "
                 "Output ONLY the numbered list, no explanations, no disclaimers."
                 + exclusion_block
@@ -232,7 +234,8 @@ class PerplexityMCPClient:
             system_content = (
                 "You are a children's content researcher specializing in nursery rhymes, "
                 "kids songs, and preschool learning videos for YouTube. You identify topics "
-                "that parents search for when entertaining and educating toddlers aged 1-5."
+                "that parents search for when entertaining and educating toddlers aged 1-5, "
+                "including both classic nursery rhymes and kids-friendly character themes."
             )
         else:
             prompt = (
@@ -625,7 +628,8 @@ def _compute_relevance(title: str, script_style: str = "cinematic_storytelling")
         *matched_tags* is the list of matching tag strings.
     """
     lower_title = title.lower()
-    # Kids channel: Perplexity already returns appropriate topics, no tag filtering needed
+    # Kids channel: all topics from the kids-specific prompt score 1.0
+    # Kids-friendly superhero topics (colors song, counting, baby versions) also score 1.0
     if script_style == "kids_rhyming":
         return 1.0, []
     matched = [tag for tag in _RELEVANCE_TAGS if tag.lower() in lower_title]
