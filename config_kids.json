@@ -48,9 +48,9 @@
   },
 
   "instagram_reels": {
-    "enabled": false,
-    "access_token": "${KIDS_INSTAGRAM_ACCESS_TOKEN}",
-    "instagram_account_id": "${KIDS_INSTAGRAM_ACCOUNT_ID}",
+    "enabled": true,
+    "access_token": "${INSTAGRAM_ACCESS_TOKEN}",
+    "instagram_account_id": "${INSTAGRAM_ACCOUNT_ID}",
     "share_to_feed": true,
     "extra_hashtags": ["kidsrhymes", "nurseryrhymes", "toddlers", "preschool", "learning"]
   }
