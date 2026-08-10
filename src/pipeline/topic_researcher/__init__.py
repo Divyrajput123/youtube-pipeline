@@ -39,7 +39,11 @@ _TRENDING_HOURS_TIERS: list[int] = [168, 720, 2160]  # 1 week, 1 month, 3 months
 # The query string sent to the search provider (used for logging only — actual
 # prompt is built inside query_trending).
 _SEARCH_QUERY = (
-    "trending superhero topics Marvel DC anime fights crossovers past 72 hours"
+    "trending superhero anime scifi topics Marvel DC Dune Star Wars Star Trek "
+    "fights crossovers lore explained power scaling past 72 hours"
+)
+_SEARCH_QUERY_KIDS = (
+    "trending nursery rhymes kids songs toddler learning topics past 72 hours"
 )
 
 # Maximum batch size allowed by the design spec.
@@ -50,7 +54,7 @@ _MAX_BATCH_SIZE = 50
 # For batch runs, we need at least batch_size topics.
 _MIN_VALID_COUNT = 1
 
-# Keyword tags used for the relevance signal — superhero/anime content focus.
+# Keyword tags used for the relevance signal — superhero/anime/scifi content focus.
 # These are used as a SOFT scoring boost, NOT a hard filter.
 # Topics from the LLM prompt are already niche-relevant; these tags just
 # give extra weight to topics that explicitly mention known franchises.
@@ -58,15 +62,20 @@ _RELEVANCE_TAGS: list[str] = [
     # Broad categories (always relevant)
     "marvel", "dc", "superhero", "anime", "manga", "comic",
     "fight", "vs", "battle", "crossover", "power", "villain", "hero",
-    "origin", "ranking", "strongest", "weakest", "explained",
+    "origin", "ranking", "strongest", "weakest", "explained", "lore",
+    "sci-fi", "science fiction", "scifi", "space", "alien", "robot",
+    "dystopia", "cyberpunk", "time travel", "multiverse", "galaxy",
+
     # Marvel
     "avengers", "spider-man", "thor", "iron man", "hulk", "deadpool",
     "wolverine", "fantastic four", "x-men", "doomsday", "secret wars",
     "doom", "kang", "galactus", "thunderbolts", "midnight sons",
     "magneto", "venom", "scarlet witch", "black panther", "captain america",
+
     # DC
     "batman", "superman", "flash", "aquaman", "wonder woman",
     "justice league", "darkseid", "joker", "green lantern",
+
     # Anime (current + classic)
     "goku", "vegeta", "broly", "dragon ball", "super saiyan",
     "naruto", "sasuke", "boruto", "madara", "itachi",
@@ -81,8 +90,31 @@ _RELEVANCE_TAGS: list[str] = [
     "attack on titan", "eren",
     "my hero academia", "deku", "all might",
     "mob psycho", "hunter x hunter",
+    "fullmetal alchemist", "cowboy bebop", "evangelion", "neon genesis",
+    "ghost in the shell", "akira", "steins gate", "code geass",
+    "re zero", "sword art online", "overlord", "that time i got reincarnated",
+    "frieren", "vinland saga", "fire force", "tokyo revengers",
+
+    # Sci-fi movies & series
+    "dune", "paul atreides", "arrakis", "sandworm", "fremen",
+    "star wars", "jedi", "sith", "darth vader", "luke skywalker",
+    "mandalorian", "ahsoka", "lightsaber", "force",
+    "star trek", "kirk", "picard", "spock", "enterprise",
+    "the expanse", "interstellar", "inception", "arrival",
+    "blade runner", "2001 space odyssey", "alien", "predator",
+    "terminator", "matrix", "fifth element",
+    "foundation", "asimov", "ender's game",
+    "battlestar galactica", "firefly", "serenity",
+    "westworld", "black mirror", "altered carbon",
+    "dark", "severance", "for all mankind",
+    "andor", "obi wan", "rings of power",
+
     # Live-action/animated series
     "homelander", "the boys", "invincible", "omni-man",
+
+    # General nerd topics
+    "power scaling", "who would win", "deep dive", "theory",
+    "timeline", "universe", "breakdown", "analysis",
 ]
 
 # ---------------------------------------------------------------------------
@@ -215,18 +247,23 @@ class PerplexityMCPClient:
         # Build a prompt that asks for structured topic data
         if script_style == "kids_rhyming":
             prompt = (
-                "What are the 10 most POPULAR and BELOVED children's topics for nursery rhymes "
+                "What are the 10 most POPULAR children's topics for nursery rhymes "
                 "and kids YouTube videos RIGHT NOW? "
-                "Focus on: classic nursery rhyme themes (animals, colors, numbers, ABCs, shapes), "
-                "seasonal topics kids love (seasons, holidays, nature), "
-                "popular preschool learning themes (counting, letters, body parts, food), "
-                "fun action songs (jumping, clapping, dancing), "
-                "AND kids-friendly superhero/character themes that are popular with toddlers "
-                "(like Spiderman colors, baby versions of popular characters, superhero counting songs). "
-                "I want topics that parents and toddlers search for on YouTube. "
+                "Use this mix: 6-7 topics from classic/learning themes (animals, colors, numbers, "
+                "ABCs, shapes, seasons, holidays, body parts, food, emotions, action songs like "
+                "jumping/clapping/dancing, classic songs like wheels on the bus, twinkle twinkle, "
+                "baa baa black sheep, old macdonald), AND 3-4 topics that are kids-friendly "
+                "character/superhero adaptations popular with toddlers on YouTube "
+                "(like 'Baby Shark Dance', 'Finger Family Superheroes Song', "
+                "'Spiderman Colors for Toddlers', 'Baby Batman Counting Song', "
+                "'Superhero ABC for Kids', 'Baby Versions of Popular Characters'). "
+                "All topics must be 100% age-appropriate for children aged 1-5. "
+                "NO anime fights, NO violence, NO adult themes — only playful, educational, "
+                "singable content. "
                 "Format: numbered list 1-10, one topic per line, short catchy title (4-8 words max). "
                 "Make titles sing-song friendly like: 'Five Little Ducks Counting Song', "
-                "'Old MacDonald Had a Farm', 'Spiderman Colors for Kids', 'Baby Shark Dance'. "
+                "'Old MacDonald Had a Farm', 'Twinkle Twinkle Little Star', 'Baby Shark Dance', "
+                "'ABC Alphabet Song for Kids', 'Colors Song for Toddlers'. "
                 "Write every title entirely in English using standard Latin characters. "
                 "Output ONLY the numbered list, no explanations, no disclaimers."
                 + exclusion_block
@@ -234,33 +271,42 @@ class PerplexityMCPClient:
             system_content = (
                 "You are a children's content researcher specializing in nursery rhymes, "
                 "kids songs, and preschool learning videos for YouTube. You identify topics "
-                "that parents search for when entertaining and educating toddlers aged 1-5, "
-                "including both classic nursery rhymes and kids-friendly character themes."
+                "that parents search for when entertaining and educating toddlers aged 1-5. "
+                "Most suggestions should be classic nursery rhymes and learning songs. "
+                "3-4 out of 10 may be kids-friendly character themes "
+                "that are adapted for toddlers in a playful, educational way — but never "
+                "anime battles, superhero fights, or any content inappropriate for young children."
             )
         else:
             prompt = (
-                "What are the 10 most TRENDING and CURRENT superhero/anime topics "
+                "What are the 10 most TRENDING and CURRENT superhero, anime, AND sci-fi topics "
                 "that people are searching for and talking about RIGHT NOW this week? "
-                "Focus on: upcoming movies and shows generating buzz this week, "
-                "current anime hype and power scaling debates, "
-                "viral character matchups and crossover speculation trending on social media, "
-                "new comic book events or reveals making news, "
-                "and any recent leaks, trailers, or announcements generating buzz. "
+                "Cover a broad mix: Marvel/DC superhero news and debates, "
+                "current anime hype and power scaling (Jujutsu Kaisen, One Piece, Dragon Ball, "
+                "Solo Leveling, Demon Slayer, Attack on Titan, Bleach, Naruto, Fullmetal Alchemist, "
+                "Cowboy Bebop, Evangelion, Ghost in the Shell, Vinland Saga, Frieren, etc.), "
+                "AND sci-fi franchise topics (Dune, Star Wars, Star Trek, The Expanse, "
+                "Blade Runner, Interstellar, Alien, Terminator, Matrix, Foundation, "
+                "Battlestar Galactica, Westworld, Black Mirror, Altered Carbon, Severance, etc.). "
+                "Focus on: upcoming movies/shows generating buzz, viral character matchups, "
+                "power scaling debates, lore deep dives, new trailers/announcements, "
+                "and theories trending on Reddit, YouTube, and social media. "
                 "I want topics people are ACTUALLY searching for TODAY — not generic evergreen topics. "
                 "Format: numbered list 1-10, one topic per line, short catchy title (5-10 words max). "
                 "Make titles click-worthy for YouTube like: 'Gojo vs Sukuna: Final Fight Explained', "
-                "'Every Hero Confirmed for the Next Avengers', 'Solo Leveling Season 2 Power Scaling'. "
+                "'Dune Part 3: Everything We Know So Far', 'Why The Expanse Is the Best Sci-Fi Ever', "
+                "'Solo Leveling Season 2 Power Scaling Breakdown'. "
                 "Write every title entirely in English using standard Latin characters. "
                 "Do not use Chinese, Japanese, Korean, Cyrillic, or any other non-Latin characters. "
                 "Output ONLY the numbered list, no explanations, no disclaimers."
                 + exclusion_block
             )
             system_content = (
-                "You are a trending topic researcher specializing in superhero "
-                "and anime content. You identify what's CURRENTLY viral and "
-                "being discussed on YouTube, Reddit, Twitter/X, and TikTok "
-                "this week. You always prioritize fresh, timely topics over "
-                "generic evergreen ones."
+                "You are a trending topic researcher specializing in superhero, anime, and "
+                "sci-fi content. You identify what's CURRENTLY viral and being discussed on "
+                "YouTube, Reddit, Twitter/X, and TikTok this week — covering Marvel, DC, "
+                "all major anime franchises, and sci-fi movies and series. "
+                "You always prioritize fresh, timely topics over generic evergreen ones."
             )
 
         try:
@@ -439,11 +485,18 @@ class TavilyMCPClient:
         else:
             time_range = "year"
 
-        search_query = (
-            "trending superhero anime topics this week 2026 "
-            "Marvel DC Jujutsu Kaisen Solo Leveling One Piece power scaling "
-            "vs battle debate viral -trailer -merchandise -blu-ray -unboxing"
-        )
+        if script_style == "kids_rhyming":
+            search_query = (
+                "trending nursery rhymes kids songs toddler learning 2026 "
+                "ABC counting colors animals preschool youtube -superhero -anime -marvel -dc"
+            )
+        else:
+            search_query = (
+                "trending superhero anime scifi topics 2026 "
+                "Marvel DC Jujutsu Kaisen Solo Leveling One Piece Dragon Ball Dune Star Wars "
+                "Star Trek The Expanse Blade Runner Interstellar Foundation Westworld Black Mirror "
+                "power scaling vs battle lore explained viral -trailer -merchandise -blu-ray -unboxing"
+            )
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -754,7 +807,7 @@ class Topic_Researcher:
             )
             try:
                 raw_results = await self._client.query_trending(
-                    query=_SEARCH_QUERY,
+                    query=_SEARCH_QUERY_KIDS if script_style == "kids_rhyming" else _SEARCH_QUERY,
                     hours_back=hours_back,
                     excluded_titles=list(excluded_lower),
                     script_style=script_style,
