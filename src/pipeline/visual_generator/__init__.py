@@ -1145,13 +1145,27 @@ async def _generate_kids_t2va_brief(
     ]
     camera = camera_moves[clip_idx % len(camera_moves)]
 
+    # Vary the visual scene setting per clip so repeated segments
+    # don't look identical — different locations, different characters foregrounded
+    scene_settings = [
+        "on a sunny green farm with red barn and white fences",
+        "in a bright colorful classroom with alphabet posters on the walls",
+        "in a magical forest with talking animals and giant mushrooms",
+        "at a cheerful playground with swings, slides, and laughing children",
+        "in a cozy living room with toys and colorful cushions everywhere",
+        "in an underwater world with friendly fish and coral reef colors",
+        "in a sunny garden full of giant flowers, butterflies, and bees",
+        "on a rainbow-colored hill under a big friendly sky with fluffy clouds",
+    ]
+    scene_setting = scene_settings[clip_idx % len(scene_settings)]
+
     # Extract the singable lines from the verse for the voiceover dialogue
     # Take first 3-4 lines of the body as the sung content
     lines = [l.strip() for l in body.split("\n") if l.strip()][:4]
     sung_lines = " ".join(lines)[:300]
 
     # Build the brief
-    brief = f"""integrated_multimodal_description: [Shot 1] Bright cheerful 3D animated style, Pixar-quality rendering, vivid saturated colors, {time_of_day}, {scene_energy}. {visual_body[:200] if visual_body else f"A warm colorful scene related to {script_topic}"}. {camera} as the scene unfolds warmly. A warm friendly narrator voice, clear and melodic, speaking in a bouncy sing-song rhythm (S1) says in an off-screen voiceover: <d>[English] {sung_lines}</d> S1's lips remain completely closed throughout. The characters and animals react with big happy expressions and gentle movements in sync with the song. The scene is full of bright colors, sparkles, and gentle motion.
+    brief = f"""integrated_multimodal_description: [Shot 1] Bright cheerful 3D animated style, Pixar-quality rendering, vivid saturated colors, {time_of_day}, {scene_energy}. Scene: {scene_setting}. {visual_body[:150] if visual_body else f"A warm colorful scene about {script_topic}"}. {camera} as the scene unfolds warmly. A warm friendly narrator voice, clear and melodic, speaking in a bouncy sing-song rhythm (S1) says in an off-screen voiceover: <d>[English] {sung_lines}</d> S1's lips remain completely closed throughout. The characters and animals react with big happy expressions and gentle movements in sync with the song. The scene is full of bright colors, sparkles, and gentle motion.
 
 overall_soundscape: Cheerful ambient sounds matching the scene — gentle breeze, birds singing, leaves rustling, soft footsteps, happy animal sounds. Everything is warm, safe, and joyful with no sudden loud noises.
 
