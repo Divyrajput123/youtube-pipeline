@@ -1098,29 +1098,21 @@ async def _generate_kids_t2va_brief(
 ) -> str:
     """Convert a kids rhyming verse into an H3 T2VA brief with 3D animation style.
 
-    The brief uses a cheerful off-screen narrator voiceover format so H3
-    generates the singing/narration voice without trying to animate character
-    mouth movements (which would look wrong on animals/characters mid-action).
+    Uses Claude to generate a scene description that matches the actual verse
+    content — so a farm song gets farm scenes, a colors song gets colorful
+    settings, a Spiderman song gets city scenes etc.
 
-    Args:
-        segment: The verse segment from the rhyming script.
-        clip_idx: Zero-based clip index (for scene progression).
-        total_clips: Total number of clips in the video.
-        script_topic: Overall video topic for context.
-
-    Returns:
-        Full T2VA production brief string.
+    Falls back to a generic cheerful brief if Claude is unavailable.
     """
     import re as _re  # noqa: PLC0415
 
     title = segment.title.strip()
     body = segment.body.strip()
 
-    # Strip annotation tags like [clap], [jump] from the body for visual desc
-    # but keep them in the dialogue for timing cues
+    # Strip annotation tags for visual description, keep for voiceover
     visual_body = _re.sub(r"\[/?[a-zA-Z\s]+\]", "", body).strip()
 
-    # Scene progression — environment gets more vibrant as song builds
+    # Scene energy based on position in the video
     progress = clip_idx / max(1, total_clips - 1)
     if progress < 0.25:
         scene_energy = "gentle opening, calm and inviting"
@@ -1145,29 +1137,22 @@ async def _generate_kids_t2va_brief(
     ]
     camera = camera_moves[clip_idx % len(camera_moves)]
 
-    # Vary the visual scene setting per clip so repeated segments
-    # don't look identical — different locations, different characters foregrounded
-    scene_settings = [
-        "on a sunny green farm with red barn and white fences",
-        "in a bright colorful classroom with alphabet posters on the walls",
-        "in a magical forest with talking animals and giant mushrooms",
-        "at a cheerful playground with swings, slides, and laughing children",
-        "in a cozy living room with toys and colorful cushions everywhere",
-        "in an underwater world with friendly fish and coral reef colors",
-        "in a sunny garden full of giant flowers, butterflies, and bees",
-        "on a rainbow-colored hill under a big friendly sky with fluffy clouds",
-    ]
-    scene_setting = scene_settings[clip_idx % len(scene_settings)]
-
-    # Extract the singable lines from the verse for the voiceover dialogue
-    # Take first 3-4 lines of the body as the sung content
+    # Extract singable lines for voiceover
     lines = [l.strip() for l in body.split("\n") if l.strip()][:4]
     sung_lines = " ".join(lines)[:300]
 
-    # Build the brief
-    brief = f"""integrated_multimodal_description: [Shot 1] Bright cheerful 3D animated style, Pixar-quality rendering, vivid saturated colors, {time_of_day}, {scene_energy}. Scene: {scene_setting}. {visual_body[:150] if visual_body else f"A warm colorful scene about {script_topic}"}. {camera} as the scene unfolds warmly. A warm friendly narrator voice, clear and melodic, speaking in a bouncy sing-song rhythm (S1) says in an off-screen voiceover: <d>[English] {sung_lines}</d> S1's lips remain completely closed throughout. The characters and animals react with big happy expressions and gentle movements in sync with the song. The scene is full of bright colors, sparkles, and gentle motion.
+    # Ask Claude to generate a scene description that fits the actual content
+    scene_description = await _generate_kids_scene_description(
+        script_topic=script_topic,
+        verse_title=title,
+        verse_body=visual_body[:200],
+        clip_idx=clip_idx,
+        total_clips=total_clips,
+    )
 
-overall_soundscape: Cheerful ambient sounds matching the scene — gentle breeze, birds singing, leaves rustling, soft footsteps, happy animal sounds. Everything is warm, safe, and joyful with no sudden loud noises.
+    brief = f"""integrated_multimodal_description: [Shot 1] Bright cheerful 3D animated style, Pixar-quality rendering, vivid saturated colors, {time_of_day}, {scene_energy}. {scene_description}. {camera} as the scene unfolds warmly. A warm friendly narrator voice, clear and melodic, speaking in a bouncy sing-song rhythm (S1) says in an off-screen voiceover: <d>[English] {sung_lines}</d> S1's lips remain completely closed throughout. The characters and animals react with big happy expressions and gentle movements in sync with the song. The scene is full of bright colors, sparkles, and gentle motion.
+
+overall_soundscape: Cheerful ambient sounds matching the scene — gentle breeze, birds singing, happy animal sounds, children laughing. Everything is warm, safe, and joyful with no sudden loud noises.
 
 non_diegetic_music: Light xylophone melody at a bouncy moderate tempo, ukulele chords, gentle hand percussion on every beat, bright major key, cheerful and singable throughout the entire clip."""
 
@@ -1175,6 +1160,48 @@ non_diegetic_music: Light xylophone melody at a bouncy moderate tempo, ukulele c
         "Kids T2VA brief clip %d/%d: %s", clip_idx + 1, total_clips, brief[:80]
     )
     return brief
+
+
+async def _generate_kids_scene_description(
+    script_topic: str,
+    verse_title: str,
+    verse_body: str,
+    clip_idx: int,
+    total_clips: int,
+) -> str:
+    """Ask Claude to describe a visually appropriate 3D animated scene for this verse.
+
+    Returns a 1-2 sentence scene description that H3 uses as the visual context.
+    Falls back to a generic cheerful scene if Claude fails.
+    """
+    try:
+        client = build_claude_client()
+        prompt = (
+            f"Song topic: {script_topic}\n"
+            f"Verse title: {verse_title}\n"
+            f"Verse content: {verse_body}\n"
+            f"Clip {clip_idx + 1} of {total_clips}\n\n"
+            "Write a 1-2 sentence description of a bright cheerful 3D animated scene "
+            "(Pixar/CoComelon style) that visually matches this verse. "
+            "The scene should show what the song is ABOUT — if it's about a farm, show farm animals; "
+            "if it's about colors, show colorful objects; if it's about Spiderman, show a friendly "
+            "cartoon Spiderman in a kids-appropriate city scene. "
+            "Each clip should show a DIFFERENT aspect or angle of the same world — "
+            f"clip {clip_idx + 1} should look visually distinct from clip {clip_idx}. "
+            "Keep it child-friendly, warm, and full of movement. "
+            "Output ONLY the scene description, no explanations."
+        )
+        result = await client.complete(prompt, max_tokens=100)
+        scene = result.strip().strip('"\'')
+        logger.debug("Kids scene description clip %d: %s", clip_idx + 1, scene[:60])
+        return scene[:250]
+    except Exception as exc:
+        logger.debug("Kids scene description fallback (clip %d): %s", clip_idx + 1, exc)
+        # Fallback: generic but content-aware using the verse body
+        return (
+            f"A warm colorful 3D animated world showing {script_topic or verse_title}, "
+            f"with happy characters, bright colors, and gentle playful movement"
+        )
 
 
 async def _generate_cinematic_t2va_brief(
