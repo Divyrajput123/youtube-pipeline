@@ -568,6 +568,24 @@ class ViewmaxMCPClient:
 
         client_id = _uuid.uuid4().hex[:8]
 
+        # If chaining, add a LoadImage node to load the frame and wire it to
+        # MiniMaxH3ImageToVideo's first_frame input. Without this, passing the
+        # filename directly as a node link reference fails silently because
+        # ComfyUI expects ["node_id", output_index] not a filename string.
+        load_image_node: dict = {}
+        first_frame_link = None
+        if first_frame_filename:
+            load_image_node = {
+                "200": {
+                    "inputs": {
+                        "image": first_frame_filename,
+                        "upload": "image",
+                    },
+                    "class_type": "LoadImage",
+                }
+            }
+            first_frame_link = ["200", 0]  # output 0 of LoadImage node = IMAGE tensor
+
         # Exact workflow from the working ComfyUI H3 T2V template
         workflow = {
             "92": {
@@ -683,10 +701,11 @@ class ViewmaxMCPClient:
                     "length": length,
                     "clip": ["105:13", 0],
                     "vae": ["105:11", 0],
-                    **({"first_frame": [first_frame_filename, 0]} if first_frame_filename else {}),
+                    **({"first_frame": first_frame_link} if first_frame_link else {}),
                 },
                 "class_type": "MiniMaxH3ImageToVideo"
-            }
+            },
+            **load_image_node,  # empty dict if no chaining, LoadImage node if chaining
         }
 
         # Submit workflow to ComfyUI
@@ -2455,6 +2474,16 @@ class Visual_Generator:
                         clip_idx + 1, clip_idx + 2,
                     )
 
+            # Brief cooldown between clips to allow H3 pod GPU to fully reset.
+            # Prevents alternating clip failures caused by VRAM not being freed
+            # before the next generation request arrives.
+            if clip_idx < total_clips - 1:
+                logger.info(
+                    "Visual_Generator [cinematic]: clip %d done — waiting 15s for pod cooldown",
+                    clip_idx + 1,
+                )
+                await asyncio.sleep(15.0)
+
         return results
 
     # ------------------------------------------------------------------
@@ -2540,6 +2569,16 @@ class Visual_Generator:
                 seed=-1,
             )
             results.append(result)
+
+            # Brief cooldown between clips to allow H3 pod GPU to fully reset.
+            # Without this, alternating clips fail because the pod hasn't freed
+            # VRAM from the previous generation before the next request arrives.
+            if clip_idx < total_clips - 1:
+                logger.info(
+                    "Visual_Generator [kids_rhyming]: clip %d done — waiting 10s for pod cooldown",
+                    clip_idx + 1,
+                )
+                await asyncio.sleep(15.0)
 
             # Chain last frame to next clip for environment continuity
             last_frame_filename = None
