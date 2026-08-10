@@ -179,6 +179,7 @@ class PerplexityMCPClient:
         query: str,
         hours_back: int,
         excluded_titles: list[str] | None = None,
+        script_style: str = "cinematic_storytelling",
     ) -> list[RawTopicResult]:
         """Call Perplexity API to get trending topics.
 
@@ -212,23 +213,55 @@ class PerplexityMCPClient:
             )
 
         # Build a prompt that asks for structured topic data
-        prompt = (
-            "What are the 10 most TRENDING and CURRENT superhero/anime topics "
-            "that people are searching for and talking about RIGHT NOW this week? "
-            "Focus on: upcoming movies and shows generating buzz this week, "
-            "current anime hype and power scaling debates, "
-            "viral character matchups and crossover speculation trending on social media, "
-            "new comic book events or reveals making news, "
-            "and any recent leaks, trailers, or announcements generating buzz. "
-            "I want topics people are ACTUALLY searching for TODAY — not generic evergreen topics. "
-            "Format: numbered list 1-10, one topic per line, short catchy title (5-10 words max). "
-            "Make titles click-worthy for YouTube like: 'Gojo vs Sukuna: Final Fight Explained', "
-            "'Every Hero Confirmed for the Next Avengers', 'Solo Leveling Season 2 Power Scaling'. "
-            "Write every title entirely in English using standard Latin characters. "
-            "Do not use Chinese, Japanese, Korean, Cyrillic, or any other non-Latin characters. "
-            "Output ONLY the numbered list, no explanations, no disclaimers."
-            + exclusion_block
-        )
+        if script_style == "kids_rhyming":
+            prompt = (
+                "What are the 10 most POPULAR and BELOVED children's topics for nursery rhymes "
+                "and kids YouTube videos RIGHT NOW? "
+                "Focus on: classic nursery rhyme themes (animals, colors, numbers, ABCs, shapes), "
+                "seasonal topics kids love (seasons, holidays, nature), "
+                "popular preschool learning themes (counting, letters, body parts, food), "
+                "fun action songs (jumping, clapping, dancing), "
+                "AND kids-friendly superhero/character themes that are popular with toddlers "
+                "(like Spiderman colors, baby versions of popular characters, superhero counting songs). "
+                "I want topics that parents and toddlers search for on YouTube. "
+                "Format: numbered list 1-10, one topic per line, short catchy title (4-8 words max). "
+                "Make titles sing-song friendly like: 'Five Little Ducks Counting Song', "
+                "'Old MacDonald Had a Farm', 'Spiderman Colors for Kids', 'Baby Shark Dance'. "
+                "Write every title entirely in English using standard Latin characters. "
+                "Output ONLY the numbered list, no explanations, no disclaimers."
+                + exclusion_block
+            )
+            system_content = (
+                "You are a children's content researcher specializing in nursery rhymes, "
+                "kids songs, and preschool learning videos for YouTube. You identify topics "
+                "that parents search for when entertaining and educating toddlers aged 1-5, "
+                "including both classic nursery rhymes and kids-friendly character themes."
+            )
+        else:
+            prompt = (
+                "What are the 10 most TRENDING and CURRENT superhero/anime topics "
+                "that people are searching for and talking about RIGHT NOW this week? "
+                "Focus on: upcoming movies and shows generating buzz this week, "
+                "current anime hype and power scaling debates, "
+                "viral character matchups and crossover speculation trending on social media, "
+                "new comic book events or reveals making news, "
+                "and any recent leaks, trailers, or announcements generating buzz. "
+                "I want topics people are ACTUALLY searching for TODAY — not generic evergreen topics. "
+                "Format: numbered list 1-10, one topic per line, short catchy title (5-10 words max). "
+                "Make titles click-worthy for YouTube like: 'Gojo vs Sukuna: Final Fight Explained', "
+                "'Every Hero Confirmed for the Next Avengers', 'Solo Leveling Season 2 Power Scaling'. "
+                "Write every title entirely in English using standard Latin characters. "
+                "Do not use Chinese, Japanese, Korean, Cyrillic, or any other non-Latin characters. "
+                "Output ONLY the numbered list, no explanations, no disclaimers."
+                + exclusion_block
+            )
+            system_content = (
+                "You are a trending topic researcher specializing in superhero "
+                "and anime content. You identify what's CURRENTLY viral and "
+                "being discussed on YouTube, Reddit, Twitter/X, and TikTok "
+                "this week. You always prioritize fresh, timely topics over "
+                "generic evergreen ones."
+            )
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -243,13 +276,7 @@ class PerplexityMCPClient:
                         "messages": [
                             {
                                 "role": "system",
-                                "content": (
-                                    "You are a trending topic researcher specializing in superhero "
-                                    "and anime content. You identify what's CURRENTLY viral and "
-                                    "being discussed on YouTube, Reddit, Twitter/X, and TikTok "
-                                    "this week. You always prioritize fresh, timely topics over "
-                                    "generic evergreen ones."
-                                ),
+                                "content": system_content,
                             },
                             {"role": "user", "content": prompt},
                         ],
@@ -383,6 +410,7 @@ class TavilyMCPClient:
         query: str,
         hours_back: int,
         excluded_titles: list[str] | None = None,
+        script_style: str = "cinematic_storytelling",
     ) -> list[RawTopicResult]:
         """Call the Tavily Search API to get trending superhero video topics.
 
@@ -582,7 +610,10 @@ def _min_max_normalize(values: list[float]) -> list[float]:
     return [0.5] * len(values)
 
 
-def _compute_relevance(title: str) -> tuple[float, list[str]]:
+_KIDS_RELEVANCE_TAGS: list[str] = []  # not used — kids topics skip relevance scoring
+
+
+def _compute_relevance(title: str, script_style: str = "cinematic_storytelling") -> tuple[float, list[str]]:
     """Return the relevance score and matched tags for *title*.
 
     Scoring is SOFT — topics from the LLM prompt are already niche-relevant,
@@ -597,6 +628,10 @@ def _compute_relevance(title: str) -> tuple[float, list[str]]:
         *matched_tags* is the list of matching tag strings.
     """
     lower_title = title.lower()
+    # Kids channel: all topics from the kids-specific prompt score 1.0
+    # Kids-friendly superhero topics (colors song, counting, baby versions) also score 1.0
+    if script_style == "kids_rhyming":
+        return 1.0, []
     matched = [tag for tag in _RELEVANCE_TAGS if tag.lower() in lower_title]
     score = 1.0 if matched else 0.5
     return score, matched
@@ -657,6 +692,7 @@ class Topic_Researcher:
         batch_size: int,
         excluded_titles: list[str],
         run_id: str,
+        script_style: str = "cinematic_storytelling",
     ) -> list[TopicEntry]:
         """Query the search provider, score, deduplicate, and return ranked topics.
 
@@ -721,6 +757,7 @@ class Topic_Researcher:
                     query=_SEARCH_QUERY,
                     hours_back=hours_back,
                     excluded_titles=list(excluded_lower),
+                    script_style=script_style,
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -796,7 +833,7 @@ class Topic_Researcher:
         # Score, sort, deduplicate
         # ------------------------------------------------------------------
 
-        entries = self._score_and_sort(raw_results)
+        entries = self._score_and_sort(raw_results, script_style=script_style)
         entries = self._deduplicate(entries, excluded_lower)
 
         # Validate we have enough topics after deduplication
@@ -824,6 +861,7 @@ class Topic_Researcher:
     def _score_and_sort(
         self,
         raw: list[RawTopicResult],
+        script_style: str = "cinematic_storytelling",
     ) -> list[TopicEntry]:
         """Compute composite scores for *raw* results and return sorted entries.
 
@@ -861,7 +899,7 @@ class Topic_Researcher:
 
         entries: list[TopicEntry] = []
         for i, result in enumerate(raw):
-            relevance_score, matched_tags = _compute_relevance(result.title)
+            relevance_score, matched_tags = _compute_relevance(result.title, script_style)
             composite = (norm_sv[i] + norm_recency[i] + relevance_score) / 3.0
 
             entries.append(

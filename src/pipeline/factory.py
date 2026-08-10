@@ -167,9 +167,20 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
     # ------------------------------------------------------------------
     # 7. Narration_Generator
     # ------------------------------------------------------------------
-    elevenlabs_client = ElevenLabsMCPClient()
+    if config.narration_provider == "google_tts":
+        # Use Google Cloud TTS as primary, fall back to ElevenLabs if it fails
+        from pipeline.narration_generator import GoogleCloudTTSFallbackClient  # noqa: PLC0415
+        import logging as _logging  # noqa: PLC0415
+        _logging.getLogger(__name__).info(
+            "Narration provider: Google Cloud TTS (primary) + ElevenLabs (fallback)"
+        )
+        tts_client = GoogleCloudTTSFallbackClient()
+    else:
+        # ElevenLabs as primary, Google TTS as fallback (original behavior)
+        tts_client = ElevenLabsMCPClient()
+
     narration_generator = Narration_Generator(
-        elevenlabs_client=elevenlabs_client,
+        elevenlabs_client=tts_client,
         asset_store=asset_store,
         content_calendar=content_calendar,
         notifier=notifier,

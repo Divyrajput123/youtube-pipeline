@@ -441,10 +441,15 @@ class PipelineConfig(BaseModel):
     instagram_reels: InstagramReelsConfig = Field(default_factory=InstagramReelsConfig)
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
-    visual_video_provider: Literal["kling", "minimax_h3"] = "minimax_h3"
-    visual_prompt_mode: Literal["narration", "cinematic"] = "narration"
+    visual_video_provider: Literal["kling", "runpod", "minimax_h3"] = "minimax_h3"
+    visual_prompt_mode: Literal["narration", "cinematic", "kids_rhyming"] = "narration"
+    narration_provider: Literal["elevenlabs", "google_tts"] = "elevenlabs"
     style_profile_cache_days: int = Field(..., ge=0)
     script_duration_minutes: float = Field(default=1.0, gt=0, le=30)
+    script_style: str = Field(
+        default="cinematic_storytelling",
+        description="Writing style for scripts: cinematic_storytelling, kids_rhyming, educational, documentary",
+    )
 
     # Weekly schedule settings — used when batch_size=7
     # Videos publish Mon-Sun at this time (local time, converted to UTC)

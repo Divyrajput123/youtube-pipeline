@@ -1,0 +1,57 @@
+{
+  "_channel_note": "Kids Rhyming Channel — nursery rhymes, counting songs, ABC, bedtime stories. Separate YouTube channel, Notion DB, and Instagram account.",
+  "reference_channel_url": "https://www.youtube.com/@CoComelon",
+
+  "_voice_note": "Gigi — child-like, playful ElevenLabs voice (jBpfuIE2acCO8z3wKNLl). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
+  "voice_id": "jBpfuIE2acCO8z3wKNLl",
+  "topic_research_provider": "perplexity",
+  "visual_video_provider": "minimax_h3",
+  "_visual_prompt_mode_note": "kids_rhyming = H3 native voice + 3D animation style (no TTS, bright cheerful visuals). cinematic = action/fight scene style. narration = TTS voice + cinematic b-roll.",
+  "visual_prompt_mode": "kids_rhyming",
+  "narration_provider": "elevenlabs",
+  "style_profile_cache_days": 7,
+
+  "_script_duration_note": "Kids videos are shorter — 1-2 minutes. At 150 WPM: 1 min = ~150 words, 2 min = ~300 words.",
+  "script_duration_minutes": 3,
+
+  "_script_style_note": "Writing style: kids_rhyming produces singable rhyming scripts for children",
+  "script_style": "kids_rhyming",
+
+  "_weekly_schedule_note": "Kids content performs best in the morning. Schedule at 8 AM IST (2:30 UTC).",
+  "weekly_publish_time_hour": 8,
+  "weekly_publish_time_minute": 0,
+  "timezone_offset_hours": 5.5,
+
+  "notification_channels": {
+    "slack_webhook_url": null,
+    "discord_webhook_url": null,
+    "smtp": {
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "username": "divysingh178@gmail.com",
+      "password": "${SMTP_PASSWORD}",
+      "from_address": "divysingh178@gmail.com",
+      "to_address": "divysingh178@gmail.com"
+    }
+  },
+
+  "batch_mode": {
+    "enabled": false,
+    "target_count": 2
+  },
+
+  "cross_posting": {
+    "x":         { "enabled": false, "api_key": null },
+    "linkedin":  { "enabled": false, "access_token": null },
+    "instagram": { "enabled": false, "access_token": null },
+    "facebook":  { "enabled": false, "page_access_token": null }
+  },
+
+  "instagram_reels": {
+    "enabled": true,
+    "access_token": "${INSTAGRAM_ACCESS_TOKEN}",
+    "instagram_account_id": "${INSTAGRAM_ACCOUNT_ID}",
+    "share_to_feed": true,
+    "extra_hashtags": ["kidsrhymes", "nurseryrhymes", "toddlers", "preschool", "learning"]
+  }
+}

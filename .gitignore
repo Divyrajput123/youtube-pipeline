@@ -210,3 +210,6 @@ semantic-review/
 
 # Windows virtualenv Scripts folder (not our project scripts/)
 Scripts/
+
+# Kids channel secrets (never commit)
+config/kids_secrets.conf

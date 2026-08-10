@@ -424,6 +424,43 @@ class GoogleCloudTTSClient:
 
 
 # ---------------------------------------------------------------------------
+# Google Cloud TTS Fallback Wrapper — Google TTS primary, ElevenLabs fallback
+# ---------------------------------------------------------------------------
+
+
+class GoogleCloudTTSFallbackClient:
+    """Google Cloud TTS as primary narrator with ElevenLabs as fallback.
+
+    Try Google Cloud TTS first. If it fails for any reason (API error, key
+    missing, network issue), automatically falls back to ElevenLabs.
+    """
+
+    def __init__(self) -> None:
+        self._google = GoogleCloudTTSClient()
+        self._elevenlabs = ElevenLabsMCPClient()
+
+    async def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        sample_rate: int,
+        bitrate_kbps: int,
+    ) -> bytes:
+        """Try Google Cloud TTS first, fall back to ElevenLabs on any failure."""
+        if self._google.available:
+            try:
+                result = await self._google.synthesize(text, voice_id, sample_rate, bitrate_kbps)
+                return result
+            except Exception as exc:
+                logger.warning(
+                    "Google Cloud TTS failed (%s) — falling back to ElevenLabs", exc
+                )
+
+        # Fallback: ElevenLabs
+        return await self._elevenlabs.synthesize(text, voice_id, sample_rate, bitrate_kbps)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
