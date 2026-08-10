@@ -2170,9 +2170,16 @@ class Visual_Generator:
         # Narration mode: split each segment into clips of CLIP_DURATION each.
         _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
         per_clip_durations: list[float] = []
-        if self._visual_prompt_mode in ("cinematic", "kids_rhyming"):
-            # One clip per scene/verse — use the provider's native clip duration
+        if self._visual_prompt_mode == "cinematic":
+            # One clip per scene — screenplay already defines the exact scene count
             per_clip_durations = [_CLIP_DUR] * len(segments)
+        elif self._visual_prompt_mode == "kids_rhyming":
+            # Kids: split segments by duration so total clips cover the full audio length.
+            # A 3-min kids script may only have 3-4 ## headings but needs ~12 clips of 15s.
+            _CUT_EVERY_S: float = _CLIP_DUR
+            for seg_dur in segment_durations:
+                n = max(1, round(seg_dur / _CUT_EVERY_S))
+                per_clip_durations.extend([seg_dur / n] * n)
         else:
             _CUT_EVERY_S: float = _CLIP_DUR
             for seg_dur in segment_durations:
@@ -2280,6 +2287,7 @@ class Visual_Generator:
                 segments=segments,
                 video_id=video_id,
                 script_topic=script_topic,
+                segment_durations=segment_durations,
             )
         return await self._generate_clips_narration(
             segments=segments,
@@ -2421,25 +2429,41 @@ class Visual_Generator:
         segments: list[_Segment],
         video_id: str,
         script_topic: str = "",
+        segment_durations: Optional[list[float]] = None,
     ) -> list[ClipResult]:
-        """Generate one 15s clip per rhyming verse using bright 3D animation style.
+        """Generate clips for kids rhyming mode using bright 3D animation style.
 
         Rules:
-        - 1 clip per ## segment (verse/chorus/hook)
-        - Always serial — single ComfyUI pod
-        - T2VA brief uses cheerful 3D animation style and narrator voiceover format
-        - Last-frame chaining for environment continuity between verses
-        - H3 native audio kept — no external TTS
+        - Duration-based splitting: each segment gets n clips based on its duration
+          and CLIP_DURATION (15s). A 3-min script with 3 segments → ~12 clips total.
+        - Always serial — single ComfyUI pod.
+        - T2VA brief uses cheerful 3D animation style and narrator voiceover format.
+        - Last-frame chaining for environment continuity between clips.
+        - H3 native audio kept — no external TTS.
         """
-        total_clips = len(segments)
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
+
+        # Build expanded clip list based on duration (same logic as narration)
+        clip_tasks: list[tuple[int, _Segment, float]] = []  # (clip_idx_in_seg, segment, seg_dur)
+        for seg_idx, segment in enumerate(segments):
+            seg_dur = (
+                segment_durations[seg_idx]
+                if segment_durations and seg_idx < len(segment_durations)
+                else 15.0
+            )
+            n = max(1, round(seg_dur / _CLIP_DUR))
+            for _ in range(n):
+                clip_tasks.append((seg_idx, segment, seg_dur))
+
+        total_clips = len(clip_tasks)
         logger.info(
-            "Visual_Generator [kids_rhyming]: generating %d clips (1 per verse, serial)",
-            total_clips,
+            "Visual_Generator [kids_rhyming]: generating %d clips (%d segments × ~%ds each, serial)",
+            total_clips, len(segments), _CLIP_DUR,
         )
 
-        # Build T2VA prompts for each verse
+        # Build T2VA prompts for each clip
         prompts: list[str] = []
-        for clip_idx, segment in enumerate(segments):
+        for clip_idx, (seg_idx, segment, _) in enumerate(clip_tasks):
             prompt = await _generate_kids_t2va_brief(
                 segment=segment,
                 clip_idx=clip_idx,
@@ -2455,7 +2479,7 @@ class Visual_Generator:
         _pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
         _comfyui_url = f"https://{_pod_id}-8188.proxy.runpod.net" if _pod_id else ""
 
-        for clip_idx, (segment, prompt) in enumerate(zip(segments, prompts)):
+        for clip_idx, ((seg_idx, segment, _), prompt) in enumerate(zip(clip_tasks, prompts)):
             logger.info(
                 "Visual_Generator [kids_rhyming]: clip %d/%d — %s%s",
                 clip_idx + 1, total_clips, segment.title[:50],
@@ -2468,7 +2492,7 @@ class Visual_Generator:
                 self._viewmax._next_first_frame = None
 
             result = await self._generate_single_clip(
-                segment_index=clip_idx,
+                segment_index=seg_idx,
                 segment=segment,
                 prompt=prompt,
                 video_id=video_id,
