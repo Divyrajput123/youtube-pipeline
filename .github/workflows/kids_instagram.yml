@@ -1,0 +1,94 @@
+name: Kids Instagram Reel Manager
+
+on:
+  # Daily at 9 AM IST (3:30 UTC) — after kids pipeline runs at 8 AM
+  schedule:
+    - cron: '30 3 * * *'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode: daily (auto 1/day), publish (specific video), test'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - publish
+          - test
+      video_id:
+        description: 'Video ID (required for publish mode)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  kids-instagram-reels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: feature/rhyme-shyme
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Create .env from Kids Channel Secrets
+        run: |
+          {
+            echo "PIPELINE_MODE=production"
+            echo "GOOGLE_CLIENT_ID=${{ secrets.KIDS_GOOGLE_CLIENT_ID }}"
+            echo "GOOGLE_CLIENT_SECRET=${{ secrets.KIDS_GOOGLE_CLIENT_SECRET }}"
+            echo "GOOGLE_REFRESH_TOKEN=${{ secrets.KIDS_GOOGLE_REFRESH_TOKEN }}"
+            echo "GOOGLE_DRIVE_FOLDER_ID=${{ secrets.KIDS_GOOGLE_DRIVE_FOLDER_ID }}"
+            echo "GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}"
+            echo "INSTAGRAM_ACCESS_TOKEN=${{ secrets.KIDS_INSTAGRAM_ACCESS_TOKEN }}"
+            echo "INSTAGRAM_ACCOUNT_ID=${{ secrets.KIDS_INSTAGRAM_ACCOUNT_ID }}"
+            echo "FACEBOOK_APP_ID=${{ secrets.KIDS_FACEBOOK_APP_ID }}"
+            echo "FACEBOOK_APP_SECRET=${{ secrets.KIDS_FACEBOOK_APP_SECRET }}"
+            echo "NOTION_AUTH_TOKEN=${{ secrets.KIDS_NOTION_AUTH_TOKEN }}"
+            echo "NOTION_DATABASE_ID=${{ secrets.KIDS_NOTION_DATABASE_ID }}"
+            echo "LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}"
+            echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
+          } > .env
+          echo "✅ Kids .env created ($(wc -l < .env) lines)"
+
+      - name: Determine mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "mode=daily" >> $GITHUB_OUTPUT
+            echo "video_id=" >> $GITHUB_OUTPUT
+          else
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "video_id=${{ github.event.inputs.video_id }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Kids Instagram Reel Manager
+        run: |
+          MODE="${{ steps.mode.outputs.mode }}"
+          VIDEO_ID="${{ steps.mode.outputs.video_id }}"
+          echo "Kids Reels | Mode: $MODE, Video ID: $VIDEO_ID"
+          if [ "$MODE" = "publish" ] && [ -n "$VIDEO_ID" ]; then
+            PYTHONPATH=src python scripts/instagram_reel_manager.py --mode publish --video-id "$VIDEO_ID"
+          else
+            PYTHONPATH=src python scripts/instagram_reel_manager.py --mode "$MODE"
+          fi
+        env:
+          PYTHONUNBUFFERED: 1
