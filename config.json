@@ -53,6 +53,8 @@
     "access_token": "${INSTAGRAM_ACCESS_TOKEN}",
     "instagram_account_id": "${INSTAGRAM_ACCOUNT_ID}",
     "share_to_feed": true,
+    "_facebook_page_id_note": "Sci-fi Nerds Facebook Page ID — enables automatic Reel mirroring to Facebook Page.",
+    "facebook_page_id": "1263102656891740",
     "extra_hashtags": []
   }
 }

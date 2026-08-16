@@ -417,6 +417,16 @@ class InstagramReelsConfig(BaseModel):
     access_token: Optional[str] = None
     instagram_account_id: Optional[str] = None
     share_to_feed: bool = True
+    facebook_page_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Numeric Facebook Page ID linked to the Instagram account. "
+            "When set, each Reel is automatically mirrored to the connected "
+            "Facebook Page via the Graph API facebook_reels_sync_data parameter. "
+            "Find your Page ID at facebook.com/[your-page]/about or via "
+            "graph.facebook.com/me/accounts?access_token=..."
+        ),
+    )
     extra_hashtags: list[str] = Field(
         default_factory=list,
         max_length=10,
