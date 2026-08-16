@@ -2575,7 +2575,7 @@ class Visual_Generator:
             # VRAM from the previous generation before the next request arrives.
             if clip_idx < total_clips - 1:
                 logger.info(
-                    "Visual_Generator [kids_rhyming]: clip %d done — waiting 10s for pod cooldown",
+                    "Visual_Generator [kids_rhyming]: clip %d done — waiting 15s for pod cooldown",
                     clip_idx + 1,
                 )
                 await asyncio.sleep(15.0)

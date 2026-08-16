@@ -233,15 +233,19 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
         # Resolve ${...} placeholders from environment
         ig_token = config.instagram_reels.access_token or ""
         ig_account_id = config.instagram_reels.instagram_account_id or ""
+        ig_fb_page_id = config.instagram_reels.facebook_page_id or ""
 
         if ig_token.startswith("${") and ig_token.endswith("}"):
             ig_token = os.environ.get(ig_token[2:-1], "")
         if ig_account_id.startswith("${") and ig_account_id.endswith("}"):
             ig_account_id = os.environ.get(ig_account_id[2:-1], "")
+        if ig_fb_page_id.startswith("${") and ig_fb_page_id.endswith("}"):
+            ig_fb_page_id = os.environ.get(ig_fb_page_id[2:-1], "")
 
         instagram_reels_client = InstagramReelsClient(
             access_token=ig_token,
             instagram_account_id=ig_account_id,
+            facebook_page_id=ig_fb_page_id or None,
         )
 
     # ------------------------------------------------------------------

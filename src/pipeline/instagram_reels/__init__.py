@@ -306,9 +306,11 @@ class InstagramReelsClient:
         self,
         access_token: str,
         instagram_account_id: str,
+        facebook_page_id: Optional[str] = None,
     ) -> None:
         self._access_token = access_token
         self._ig_account_id = instagram_account_id
+        self._facebook_page_id = facebook_page_id or ""
         self._fallback_mode = False
         self._token_checked = False  # Only check once per pipeline run
 
@@ -323,6 +325,12 @@ class InstagramReelsClient:
                 "Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_ACCOUNT_ID to enable."
             )
             self._fallback_mode = True
+
+        if facebook_page_id:
+            logger.info(
+                "InstagramReelsClient: Facebook Page mirroring enabled (page_id=%s)",
+                facebook_page_id,
+            )
 
     async def _ensure_valid_token(self) -> None:
         """Check and refresh the token if it's near expiry. Called once per run."""
@@ -461,6 +469,21 @@ class InstagramReelsClient:
         }
         if cover_url:
             params["cover_url"] = cover_url
+
+        # Mirror Reel to connected Facebook Page automatically.
+        # When facebook_page_id is set, the Graph API cross-posts the Reel
+        # to the linked Facebook Page feed — no separate API call needed.
+        # The page must be linked to the Instagram Business account in
+        # Meta Business Suite (Settings → Linked Accounts).
+        if self._facebook_page_id:
+            import json as _json  # noqa: PLC0415
+            params["facebook_reels_sync_data"] = _json.dumps({
+                "fb_page_id": self._facebook_page_id,
+            })
+            logger.info(
+                "InstagramReelsClient: will mirror Reel to Facebook Page %s",
+                self._facebook_page_id,
+            )
 
         # For scheduled publishing: Instagram Content Publishing API uses
         # the `published` field set to false at container creation, then
