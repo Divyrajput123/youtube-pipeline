@@ -78,10 +78,12 @@ class NotionClient(Protocol):
         self,
         database_id: str,
         filter: Optional[dict[str, Any]] = None,
+        sorts: Optional[list[dict[str, Any]]] = None,
     ) -> list[dict[str, Any]]:
         """Query a Notion database, returning a list of raw page objects.
 
         *filter* is an optional Notion filter object (compound or single-property).
+        *sorts* is an optional list of Notion sort objects.
         """
         ...
 
@@ -171,12 +173,15 @@ class NotionMCPClient:
         self,
         database_id: str,
         filter: Optional[dict[str, Any]] = None,
+        sorts: Optional[list[dict[str, Any]]] = None,
     ) -> list[dict[str, Any]]:
         """Query pages via the data_source endpoint (Notion v2)."""
         ds_id = await self._resolve_data_source_id()
         kwargs: dict[str, Any] = {"page_size": 100}
         if filter is not None:
             kwargs["filter"] = filter
+        if sorts is not None:
+            kwargs["sorts"] = sorts
         response = await self._client.data_sources.query(ds_id, **kwargs)
         return response.get("results", [])
 
@@ -718,8 +723,17 @@ class Content_Calendar:
             "property": "status",
             "select": {"equals": status.value},
         }
+        # Sort by scheduled_publish_datetime ascending so the oldest scheduled
+        # video is posted first — Reels go out in the same order as YouTube publishes.
+        # Without this Notion defaults to last-edited descending, causing the
+        # Reel Manager to always pick the most recently created video.
+        notion_sorts: list[dict[str, Any]] = [
+            {"property": "scheduled_publish_datetime", "direction": "ascending"}
+        ]
         pages = await _retry_notion(
-            lambda: self._client.query_database(self._db_id, filter=notion_filter),
+            lambda: self._client.query_database(
+                self._db_id, filter=notion_filter, sorts=notion_sorts
+            ),
             operation_name=f"list_videos_by_status(status={status.value})",
         )
         results = []
