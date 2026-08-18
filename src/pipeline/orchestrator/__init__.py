@@ -351,6 +351,7 @@ class Orchestrator:
                 batch_size=1,
                 excluded_titles=past_topics,
                 run_id=run_id,
+                script_style=self._config.script_style,
             ),
         )
 
@@ -489,6 +490,7 @@ class Orchestrator:
                     batch_size=1,
                     excluded_titles=past_topics_reject,
                     run_id=run_id,
+                    script_style=self._config.script_style,
                 ),
             )
             top_topic = new_topics[0]
@@ -1065,7 +1067,8 @@ class Orchestrator:
                     run_id=run_id,
                     pre_status=PipelineStatus.RESEARCHING,
                     coro_factory=lambda: self._topic_researcher.research(
-                        batch_size=1, excluded_titles=[], run_id=run_id
+                        batch_size=1, excluded_titles=[], run_id=run_id,
+                        script_style=self._config.script_style,
                     ),
                 )
             else:
@@ -1587,6 +1590,7 @@ class Orchestrator:
                 batch_size=n,
                 excluded_titles=excluded_titles,
                 run_id=run_id,
+                script_style=self._config.script_style,
             ),
         )
 
