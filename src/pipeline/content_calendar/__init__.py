@@ -155,9 +155,10 @@ class NotionMCPClient:
         database_id: str,
         properties: dict[str, Any],
     ) -> dict[str, Any]:
-        """Create a page inside the Notion database using the standard API."""
+        """Create a page inside the data_source that backs this database."""
+        ds_id = await self._resolve_data_source_id()
         return await self._client.pages.create(
-            parent={"database_id": self._database_id},
+            parent={"type": "data_source_id", "data_source_id": ds_id},
             properties=properties,
         )
 
@@ -408,6 +409,33 @@ class Content_Calendar:
             operation_name=f"update_topic({video_id})",
         )
         logger.info("Updated topic for video_id=%s to %r", video_id, topic)
+
+    async def update_title(
+        self,
+        video_id: str,
+        title: str,
+    ) -> None:
+        """Set the ``title`` (Notion Name column) on the record for *video_id*.
+
+        Called after metadata generation so the Notion row shows a meaningful
+        name instead of being blank.
+
+        Args:
+            video_id: The pipeline video identifier.
+            title: The SEO-optimised YouTube title from MetadataPackage.
+
+        Raises:
+            ContentCalendarError: If the Notion API fails after all retries.
+        """
+        page_id = await self._resolve_page_id(video_id)
+        properties = {
+            "title": {"title": [{"text": {"content": title[:2000]}}]}
+        }
+        await _retry_notion(
+            lambda: self._client.update_page(page_id, properties),
+            operation_name=f"update_title({video_id})",
+        )
+        logger.info("Updated title for video_id=%s to %r", video_id, title)
 
     async def update_asset_link(
         self,
