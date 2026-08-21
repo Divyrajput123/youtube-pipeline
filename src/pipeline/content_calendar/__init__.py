@@ -133,12 +133,22 @@ class NotionMCPClient:
     def __init__(self, auth_token: str, database_id: str) -> None:
         self._auth_token   = auth_token
         self._database_id  = _format_notion_id(database_id)
+        self._data_source_id: Optional[str] = None
         from notion_client import AsyncClient  # noqa: PLC0415
         self._client: Any = AsyncClient(auth=auth_token)
 
     async def _resolve_data_source_id(self) -> str:
-        """Return the database ID (kept for backwards compatibility)."""
-        return self._database_id
+        """Return the data_source ID backing this database, caching on first call."""
+        if self._data_source_id:
+            return self._data_source_id
+        db = await self._client.databases.retrieve(database_id=self._database_id)
+        data_sources = db.get("data_sources", [])
+        if data_sources:
+            self._data_source_id = data_sources[0]["id"]
+        else:
+            # Older Notion database — data_source_id == database_id
+            self._data_source_id = self._database_id
+        return self._data_source_id
 
     async def create_page(
         self,
@@ -164,13 +174,14 @@ class NotionMCPClient:
         filter: Optional[dict[str, Any]] = None,
         sorts: Optional[list[dict[str, Any]]] = None,
     ) -> list[dict[str, Any]]:
-        """Query pages via the standard Notion databases.query endpoint."""
-        kwargs: dict[str, Any] = {"database_id": self._database_id, "page_size": 100}
+        """Query pages via data_sources.query (notion-client v2.x SDK)."""
+        ds_id = await self._resolve_data_source_id()
+        kwargs: dict[str, Any] = {"page_size": 100}
         if filter is not None:
             kwargs["filter"] = filter
         if sorts is not None:
             kwargs["sorts"] = sorts
-        response = await self._client.databases.query(**kwargs)
+        response = await self._client.data_sources.query(ds_id, **kwargs)
         return response.get("results", [])
 
 
