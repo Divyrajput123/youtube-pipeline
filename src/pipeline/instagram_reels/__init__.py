@@ -144,7 +144,9 @@ def build_reel_caption(
         Caption string within Instagram's 2200 char limit.
     """
     # --- 1. YouTube redirect (FIRST — visible before "more" tap) ---
-    yt_redirect = f"Full breakdown on YouTube (link in bio)\n{youtube_url}"
+    # Note: Instagram does not make URLs in captions clickable — this is a
+    # platform limitation. Direct users to the link in bio instead.
+    yt_redirect = f"🎬 Full video on YouTube — link in bio 👆"
 
     # --- 2. Hook line using primary keyword ---
     primary_kw = metadata.primary_keyword or metadata.title
