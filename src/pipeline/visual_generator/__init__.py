@@ -149,8 +149,6 @@ def _generate_placeholder_clip_jpeg(prompt: str) -> bytes:
     Returns:
         Raw JPEG bytes for a 1920×1080 frame with the prompt text.
     """
-    import hashlib
-    
     # Pick a color based on the prompt hash for variety
     prompt_hash = int(hashlib.md5(prompt.encode()).hexdigest()[:6], 16)
     r = (prompt_hash >> 16) & 0xFF
@@ -182,7 +180,6 @@ def _generate_placeholder_clip_jpeg(prompt: str) -> bytes:
     draw.text((x_title, y_title), title, fill=(255, 255, 255), font=font_title)
     
     # Draw the prompt text wrapped in the middle
-    import textwrap
     wrapped_prompt = textwrap.fill(prompt, width=60)
     lines = wrapped_prompt.split('\n')
     
@@ -947,13 +944,6 @@ def _parse_segments(content: str) -> list[_Segment]:
         segments.append(_Segment(title=title, body=body))
 
     return segments
-
-
-def _build_scene_prompt(segment: _Segment, style_profile: StyleProfile) -> str:
-    """Derive a Viewmax scene prompt for *segment* (first clip)."""
-    body_preview = segment.body[:100]
-    patterns_str = ", ".join(style_profile.visual_style.composition_patterns)
-    return f"{segment.title} visual scene: {body_preview}. Style: {patterns_str}"
 
 
 async def _rephrase_prompt_for_moderation(original_prompt: str) -> str:

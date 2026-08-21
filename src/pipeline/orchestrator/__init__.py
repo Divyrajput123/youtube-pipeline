@@ -39,6 +39,7 @@ from pipeline.models import (
     NarrationAsset,
     PipelineConfig,
     PipelineStatus,
+    Platform,
     Script,
     StyleProfile,
     SubFolder,
@@ -618,12 +619,19 @@ class Orchestrator:
             ),
         )
 
-        # Update Notion with metadata Drive URL
+        # Update Notion with metadata Drive URL and video title
         if getattr(metadata, "asset_url", None):
             try:
                 await self._content_calendar.update_asset_link(video_id, "metadata", metadata.asset_url)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not update metadata_url in Notion: %s", exc)
+
+        # Set the Notion row title so records are visible by name (not blank)
+        if getattr(metadata, "title", None):
+            try:
+                await self._content_calendar.update_title(video_id, metadata.title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update title in Notion: %s", exc)
 
         # Advance to Awaiting Final Review (Review Gate 2)
         # Record pipeline end time BEFORE the gate — all generation work is done
@@ -897,7 +905,12 @@ class Orchestrator:
             coro_factory=lambda: self._cross_poster.post(
                 video_url=yt_ref.unlisted_url,
                 metadata=metadata,
-                platforms=[],  # populated from config in full implementation
+                platforms=[p for p, cfg in [
+                    (Platform.X,         self._config.cross_posting.x),
+                    (Platform.LINKEDIN,  self._config.cross_posting.linkedin),
+                    (Platform.INSTAGRAM, self._config.cross_posting.instagram),
+                    (Platform.FACEBOOK,  self._config.cross_posting.facebook),
+                ] if cfg.enabled],
             ),
         )
 
@@ -1294,7 +1307,12 @@ class Orchestrator:
                 coro_factory=lambda: self._cross_poster.post(
                     video_url=yt_ref.unlisted_url,
                     metadata=metadata,  # type: ignore[arg-type]
-                    platforms=[],
+                    platforms=[p for p, cfg in [
+                        (Platform.X,         self._config.cross_posting.x),
+                        (Platform.LINKEDIN,  self._config.cross_posting.linkedin),
+                        (Platform.INSTAGRAM, self._config.cross_posting.instagram),
+                        (Platform.FACEBOOK,  self._config.cross_posting.facebook),
+                    ] if cfg.enabled],
                 ),
             )
 
