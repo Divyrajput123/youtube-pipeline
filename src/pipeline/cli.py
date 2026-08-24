@@ -96,6 +96,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Resume all stuck videos first, then generate a new one.",
     )
+    parser.add_argument(
+        "--topic",
+        metavar="TOPIC",
+        default=None,
+        help=(
+            "Override automatic topic research with a specific topic. "
+            "Example: --topic \"Why Dune's Sandworms Are Unstoppable\". "
+            "Only applies to single-video runs (not --batch-size)."
+        ),
+    )
     return parser
 
 
@@ -269,14 +279,14 @@ async def _run(args: argparse.Namespace) -> None:
                     print(f"  Could not query status '{status.value}': {exc}")
             print(f"  Resumed {resumed_count} video(s)")
             print("Step 2/2: Generating new video...")
-            run_id = await orchestrator.start_pipeline()
+            run_id = await orchestrator.start_pipeline(forced_topic=args.topic)
             print(f"  New pipeline started: {run_id}")
         elif args.batch_size is not None:
             _validate_batch_size(args.batch_size)
             batch_id = await orchestrator.start_batch(n=args.batch_size)
             print(f"Batch started: {batch_id}")
         else:
-            run_id = await orchestrator.start_pipeline()
+            run_id = await orchestrator.start_pipeline(forced_topic=args.topic)
             print(f"Pipeline started: {run_id}")
     finally:
         stop_tunnel()

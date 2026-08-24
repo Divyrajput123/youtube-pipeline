@@ -264,6 +264,7 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     async def start_pipeline(self) -> str:
+    async def start_pipeline(self, forced_topic: str | None = None) -> str:
         """Start a new pipeline run for a single video.
 
         Steps
@@ -276,6 +277,12 @@ class Orchestrator:
         4. On any unrecoverable stage failure: log the error, update
            Content_Calendar to ``Pipeline Error — {stage_name}``, and notify
            the Notifier within 60 seconds.
+
+        Args:
+            forced_topic: Optional topic string provided by the user via CLI.
+                When set, topic research is skipped and a TopicEntry is built
+                directly from this string. When None (default), the topic
+                researcher runs normally.
 
         Returns:
             The ``run_id`` (UUID4 string) for this pipeline run.
@@ -343,18 +350,34 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("start_pipeline: could not fetch YouTube titles for exclusion: %s", exc)
 
-        topics: list[TopicEntry] = await self._run_stage(
-            stage_name="topic_researcher",
-            video_id=video_id,
-            run_id=run_id,
-            pre_status=PipelineStatus.RESEARCHING,
-            coro_factory=lambda: self._topic_researcher.research(
-                batch_size=1,
-                excluded_titles=past_topics,
+        if forced_topic:
+            # User supplied a topic directly — skip topic research entirely.
+            import datetime as _dt  # noqa: PLC0415
+            logger.info("start_pipeline: using forced_topic=%r (skipping topic research)", forced_topic)
+            await self._update_calendar_status(video_id, PipelineStatus.RESEARCHING, run_id)
+            topics: list[TopicEntry] = [
+                TopicEntry(
+                    title=forced_topic,
+                    composite_score=1.0,
+                    recency_hours=0.0,
+                    source_query_timestamp=_dt.datetime.now(_dt.timezone.utc),
+                    search_volume_signal=100.0,
+                    relevance_tags_matched=[],
+                )
+            ]
+        else:
+            topics = await self._run_stage(
+                stage_name="topic_researcher",
+                video_id=video_id,
                 run_id=run_id,
-                script_style=self._config.script_style,
-            ),
-        )
+                pre_status=PipelineStatus.RESEARCHING,
+                coro_factory=lambda: self._topic_researcher.research(
+                    batch_size=1,
+                    excluded_titles=past_topics,
+                    run_id=run_id,
+                    script_style=self._config.script_style,
+                ),
+            )
 
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPTING, run_id)
 
