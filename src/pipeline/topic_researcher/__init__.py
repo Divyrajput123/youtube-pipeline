@@ -664,8 +664,6 @@ def _min_max_normalize(values: list[float]) -> list[float]:
     return [0.5] * len(values)
 
 
-_KIDS_RELEVANCE_TAGS: list[str] = []  # not used — kids topics skip relevance scoring
-
 
 def _compute_relevance(title: str, script_style: str = "cinematic_storytelling") -> tuple[float, list[str]]:
     """Return the relevance score and matched tags for *title*.

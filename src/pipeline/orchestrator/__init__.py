@@ -39,6 +39,7 @@ from pipeline.models import (
     NarrationAsset,
     PipelineConfig,
     PipelineStatus,
+    Platform,
     Script,
     StyleProfile,
     SubFolder,
@@ -263,6 +264,7 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     async def start_pipeline(self) -> str:
+    async def start_pipeline(self, forced_topic: str | None = None) -> str:
         """Start a new pipeline run for a single video.
 
         Steps
@@ -275,6 +277,12 @@ class Orchestrator:
         4. On any unrecoverable stage failure: log the error, update
            Content_Calendar to ``Pipeline Error — {stage_name}``, and notify
            the Notifier within 60 seconds.
+
+        Args:
+            forced_topic: Optional topic string provided by the user via CLI.
+                When set, topic research is skipped and a TopicEntry is built
+                directly from this string. When None (default), the topic
+                researcher runs normally.
 
         Returns:
             The ``run_id`` (UUID4 string) for this pipeline run.
@@ -342,18 +350,34 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("start_pipeline: could not fetch YouTube titles for exclusion: %s", exc)
 
-        topics: list[TopicEntry] = await self._run_stage(
-            stage_name="topic_researcher",
-            video_id=video_id,
-            run_id=run_id,
-            pre_status=PipelineStatus.RESEARCHING,
-            coro_factory=lambda: self._topic_researcher.research(
-                batch_size=1,
-                excluded_titles=past_topics,
+        if forced_topic:
+            # User supplied a topic directly — skip topic research entirely.
+            import datetime as _dt  # noqa: PLC0415
+            logger.info("start_pipeline: using forced_topic=%r (skipping topic research)", forced_topic)
+            await self._update_calendar_status(video_id, PipelineStatus.RESEARCHING, run_id)
+            topics: list[TopicEntry] = [
+                TopicEntry(
+                    title=forced_topic,
+                    composite_score=1.0,
+                    recency_hours=0.0,
+                    source_query_timestamp=_dt.datetime.now(_dt.timezone.utc),
+                    search_volume_signal=100.0,
+                    relevance_tags_matched=[],
+                )
+            ]
+        else:
+            topics = await self._run_stage(
+                stage_name="topic_researcher",
+                video_id=video_id,
                 run_id=run_id,
-                script_style=self._config.script_style,
-            ),
-        )
+                pre_status=PipelineStatus.RESEARCHING,
+                coro_factory=lambda: self._topic_researcher.research(
+                    batch_size=1,
+                    excluded_titles=past_topics,
+                    run_id=run_id,
+                    script_style=self._config.script_style,
+                ),
+            )
 
         await self._update_calendar_status(video_id, PipelineStatus.SCRIPTING, run_id)
 
@@ -454,8 +478,19 @@ class Orchestrator:
                 await self._flush_log(run_id, video_id)
 
         # Handle reject: keep regenerating new topics + scripts until approved
+        reject_count = 0
         while gate1_action == "reject":
-            logger.info("Gate 1 rejected: restarting from topic research for video_id=%s", video_id)
+            reject_count += 1
+            logger.info(
+                "Gate 1 rejected (attempt %d): restarting from topic research for video_id=%s",
+                reject_count, video_id,
+            )
+            if forced_topic:
+                logger.warning(
+                    "start_pipeline: forced_topic=%r is being discarded after Gate 1 reject "
+                    "(attempt %d) — running automatic topic research instead",
+                    forced_topic, reject_count,
+                )
 
             # Fetch fresh exclusion list before marking as rejected
             past_topics_reject: list[str] = []
@@ -466,8 +501,9 @@ class Orchestrator:
             except Exception:
                 pass
 
-            # Create a NEW Notion record, so topic research updates the new one
-            new_video_id = f"video-{run_id[:8]}r"
+            # Create a NEW Notion record with a unique ID per rejection attempt
+            # Using reject_count prevents collision when the same run is rejected multiple times
+            new_video_id = f"video-{run_id[:8]}r{reject_count}"
             try:
                 await self._content_calendar.create_record(video_id=new_video_id, batch_id=None)
             except Exception as exc:  # noqa: BLE001
@@ -618,12 +654,19 @@ class Orchestrator:
             ),
         )
 
-        # Update Notion with metadata Drive URL
+        # Update Notion with metadata Drive URL and video title
         if getattr(metadata, "asset_url", None):
             try:
                 await self._content_calendar.update_asset_link(video_id, "metadata", metadata.asset_url)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not update metadata_url in Notion: %s", exc)
+
+        # Set the Notion row title so records are visible by name (not blank)
+        if getattr(metadata, "title", None):
+            try:
+                await self._content_calendar.update_title(video_id, metadata.title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not update title in Notion: %s", exc)
 
         # Advance to Awaiting Final Review (Review Gate 2)
         # Record pipeline end time BEFORE the gate — all generation work is done
@@ -897,7 +940,12 @@ class Orchestrator:
             coro_factory=lambda: self._cross_poster.post(
                 video_url=yt_ref.unlisted_url,
                 metadata=metadata,
-                platforms=[],  # populated from config in full implementation
+                platforms=[p for p, cfg in [
+                    (Platform.X,         self._config.cross_posting.x),
+                    (Platform.LINKEDIN,  self._config.cross_posting.linkedin),
+                    (Platform.INSTAGRAM, self._config.cross_posting.instagram),
+                    (Platform.FACEBOOK,  self._config.cross_posting.facebook),
+                ] if cfg.enabled],
             ),
         )
 
@@ -1294,7 +1342,12 @@ class Orchestrator:
                 coro_factory=lambda: self._cross_poster.post(
                     video_url=yt_ref.unlisted_url,
                     metadata=metadata,  # type: ignore[arg-type]
-                    platforms=[],
+                    platforms=[p for p, cfg in [
+                        (Platform.X,         self._config.cross_posting.x),
+                        (Platform.LINKEDIN,  self._config.cross_posting.linkedin),
+                        (Platform.INSTAGRAM, self._config.cross_posting.instagram),
+                        (Platform.FACEBOOK,  self._config.cross_posting.facebook),
+                    ] if cfg.enabled],
                 ),
             )
 

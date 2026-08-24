@@ -32,6 +32,11 @@ on:
         options:
           - narration
           - cinematic
+      topic:
+        description: 'Optional: provide a specific topic to override automatic research (e.g. "Why Dune Sandworms Are Unstoppable"). Leave empty for auto.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   run-pipeline:
@@ -138,21 +143,36 @@ jobs:
         run: |
           MODE="${{ github.event.inputs.mode }}"
           BATCH="${{ github.event.inputs.batch_size }}"
+          TOPIC="${{ github.event.inputs.topic }}"
           echo "🚀 Running pipeline in mode: $MODE, batch: $BATCH"
 
           if [ "$MODE" = "batch" ]; then
             if [ "$BATCH" = "1" ]; then
-              # batch-size 1 means single video — skip --batch-size flag
-              PYTHONPATH=src python -m pipeline --config config.json
+              if [ -n "$TOPIC" ]; then
+                echo "📌 Using forced topic: $TOPIC"
+                PYTHONPATH=src python -m pipeline --config config.json --topic "$TOPIC"
+              else
+                PYTHONPATH=src python -m pipeline --config config.json
+              fi
             else
               PYTHONPATH=src python -m pipeline --config config.json --batch-size $BATCH
             fi
           elif [ "$MODE" = "single" ]; then
-            PYTHONPATH=src python -m pipeline --config config.json
+            if [ -n "$TOPIC" ]; then
+              echo "📌 Using forced topic: $TOPIC"
+              PYTHONPATH=src python -m pipeline --config config.json --topic "$TOPIC"
+            else
+              PYTHONPATH=src python -m pipeline --config config.json
+            fi
           elif [ "$MODE" = "resume-all" ]; then
             PYTHONPATH=src python -m pipeline --config config.json --resume-all
           elif [ "$MODE" = "resume-and-generate" ]; then
-            PYTHONPATH=src python -m pipeline --config config.json --resume-and-generate
+            if [ -n "$TOPIC" ]; then
+              echo "📌 Using forced topic: $TOPIC"
+              PYTHONPATH=src python -m pipeline --config config.json --resume-and-generate --topic "$TOPIC"
+            else
+              PYTHONPATH=src python -m pipeline --config config.json --resume-and-generate
+            fi
           fi
         env:
           PYTHONUNBUFFERED: 1

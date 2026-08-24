@@ -8,7 +8,8 @@ Uses the Instagram Graph API (via Facebook's Content Publishing API) to:
 Requirements:
   - A Facebook Page connected to an Instagram Professional (Business/Creator) account.
   - A long-lived access token with permissions:
-      instagram_basic, instagram_content_publish, pages_read_engagement
+      instagram_basic, instagram_content_publish, pages_read_engagement,
+      pages_show_list (required for facebook_reels_sync_data mirroring to a Facebook Page)
   - The Instagram Account ID (numeric, not the @username).
 
 Retry policy:
@@ -144,7 +145,9 @@ def build_reel_caption(
         Caption string within Instagram's 2200 char limit.
     """
     # --- 1. YouTube redirect (FIRST — visible before "more" tap) ---
-    yt_redirect = f"Full breakdown on YouTube (link in bio)\n{youtube_url}"
+    # Note: Instagram does not make URLs in captions clickable — this is a
+    # platform limitation. Direct users to the link in bio instead.
+    yt_redirect = f"🎬 Full video on YouTube — link in bio 👆"
 
     # --- 2. Hook line using primary keyword ---
     primary_kw = metadata.primary_keyword or metadata.title
@@ -300,6 +303,7 @@ class InstagramReelsClient:
       - instagram_basic
       - instagram_content_publish
       - pages_read_engagement
+      - pages_show_list (required when facebook_page_id is set for Reel mirroring)
     """
 
     def __init__(
