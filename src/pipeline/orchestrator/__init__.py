@@ -263,7 +263,6 @@ class Orchestrator:
     # Task 16.1 — start_pipeline
     # ------------------------------------------------------------------
 
-    async def start_pipeline(self) -> str:
     async def start_pipeline(self, forced_topic: str | None = None) -> str:
         """Start a new pipeline run for a single video.
 
