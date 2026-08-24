@@ -8,7 +8,8 @@ Uses the Instagram Graph API (via Facebook's Content Publishing API) to:
 Requirements:
   - A Facebook Page connected to an Instagram Professional (Business/Creator) account.
   - A long-lived access token with permissions:
-      instagram_basic, instagram_content_publish, pages_read_engagement
+      instagram_basic, instagram_content_publish, pages_read_engagement,
+      pages_show_list (required for facebook_reels_sync_data mirroring to a Facebook Page)
   - The Instagram Account ID (numeric, not the @username).
 
 Retry policy:
@@ -302,6 +303,7 @@ class InstagramReelsClient:
       - instagram_basic
       - instagram_content_publish
       - pages_read_engagement
+      - pages_show_list (required when facebook_page_id is set for Reel mirroring)
     """
 
     def __init__(

@@ -122,18 +122,22 @@ jobs:
           TOPIC="${{ github.event.inputs.topic }}"
           echo "🎵 Running kids pipeline in mode: $MODE"
 
-          TOPIC_FLAG=""
-          if [ -n "$TOPIC" ]; then
-            TOPIC_FLAG="--topic \"$TOPIC\""
-            echo "📌 Using forced topic: $TOPIC"
-          fi
-
           if [ "$MODE" = "resume-all" ]; then
             PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env --resume-all
           elif [ "$MODE" = "resume-and-generate" ]; then
-            eval PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env --resume-and-generate $TOPIC_FLAG
+            if [ -n "$TOPIC" ]; then
+              echo "📌 Using forced topic: $TOPIC"
+              PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env --resume-and-generate --topic "$TOPIC"
+            else
+              PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env --resume-and-generate
+            fi
           else
-            eval PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env $TOPIC_FLAG
+            if [ -n "$TOPIC" ]; then
+              echo "📌 Using forced topic: $TOPIC"
+              PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env --topic "$TOPIC"
+            else
+              PYTHONPATH=src python -m pipeline --config config_kids.json --env-file pipeline_output/kidschannel.env
+            fi
           fi
         env:
           PYTHONUNBUFFERED: 1

@@ -242,12 +242,12 @@ class ViewmaxMCPClient:
             self._h3_pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
             if self._h3_pod_id:
                 logger.info(
-                    "ViewmaxMCPClient: selected MiniMax H3 ComfyUI pod=%s (10s clips, 768p)",
+                    "ViewmaxMCPClient: selected MiniMax H3 ComfyUI pod=%s (15s clips, 768p)",
                     self._h3_pod_id,
                 )
             elif self._h3_endpoint_id and self._h3_api_key:
                 logger.info(
-                    "ViewmaxMCPClient: selected MiniMax H3 endpoint=%s (10s clips, 768p)",
+                    "ViewmaxMCPClient: selected MiniMax H3 endpoint=%s (15s clips, 768p)",
                     self._h3_endpoint_id,
                 )
             elif is_production_mode():

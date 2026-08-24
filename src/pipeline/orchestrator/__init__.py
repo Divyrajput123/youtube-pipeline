@@ -478,8 +478,19 @@ class Orchestrator:
                 await self._flush_log(run_id, video_id)
 
         # Handle reject: keep regenerating new topics + scripts until approved
+        reject_count = 0
         while gate1_action == "reject":
-            logger.info("Gate 1 rejected: restarting from topic research for video_id=%s", video_id)
+            reject_count += 1
+            logger.info(
+                "Gate 1 rejected (attempt %d): restarting from topic research for video_id=%s",
+                reject_count, video_id,
+            )
+            if forced_topic:
+                logger.warning(
+                    "start_pipeline: forced_topic=%r is being discarded after Gate 1 reject "
+                    "(attempt %d) — running automatic topic research instead",
+                    forced_topic, reject_count,
+                )
 
             # Fetch fresh exclusion list before marking as rejected
             past_topics_reject: list[str] = []
@@ -490,8 +501,9 @@ class Orchestrator:
             except Exception:
                 pass
 
-            # Create a NEW Notion record, so topic research updates the new one
-            new_video_id = f"video-{run_id[:8]}r"
+            # Create a NEW Notion record with a unique ID per rejection attempt
+            # Using reject_count prevents collision when the same run is rejected multiple times
+            new_video_id = f"video-{run_id[:8]}r{reject_count}"
             try:
                 await self._content_calendar.create_record(video_id=new_video_id, batch_id=None)
             except Exception as exc:  # noqa: BLE001
