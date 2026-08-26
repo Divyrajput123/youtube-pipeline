@@ -56,5 +56,15 @@
     "_facebook_page_id_note": "Sci-fi Nerds Facebook Page ID — enables automatic Reel mirroring to Facebook Page.",
     "facebook_page_id": "1263102656891740",
     "extra_hashtags": []
+  },
+
+  "_bilibili_note": "Bilibili upload — get SESSDATA and bili_jct from browser cookies after logging into bilibili.com. tid 201=Science Fiction, 21=Anime, 122=Science & Tech.",
+  "bilibili": {
+    "enabled": false,
+    "sessdata": "${BILIBILI_SESSDATA}",
+    "bili_jct": "${BILIBILI_BILI_JCT}",
+    "tid": 201,
+    "tags": ["scifi", "anime", "sciencefiction", "scifiexplained", "lore"],
+    "source": ""
   }
 }

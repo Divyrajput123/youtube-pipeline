@@ -27,6 +27,7 @@ dependencies = [
   "pillow>=10.3,<11",
   "python-dotenv>=1.0,<2",
   "pyngrok>=7.0,<8",
+  "bilitool>=1.0",
 ]
 description = "AI YouTube Content Pipeline — end-to-end automated video production system."
 dynamic = ["version"]

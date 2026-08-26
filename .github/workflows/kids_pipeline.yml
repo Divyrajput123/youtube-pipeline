@@ -95,6 +95,8 @@ jobs:
             echo "INSTAGRAM_ACCOUNT_ID=${{ secrets.KIDS_INSTAGRAM_ACCOUNT_ID }}"
             echo "FACEBOOK_APP_ID=${{ secrets.KIDS_FACEBOOK_APP_ID }}"
             echo "FACEBOOK_APP_SECRET=${{ secrets.KIDS_FACEBOOK_APP_SECRET }}"
+            echo "BILIBILI_SESSDATA=${{ secrets.BILIBILI_SESSDATA }}"
+            echo "BILIBILI_BILI_JCT=${{ secrets.BILIBILI_BILI_JCT }}"
           } > .env
           echo "✅ Kids channel .env created ($(wc -l < .env) lines)"
 

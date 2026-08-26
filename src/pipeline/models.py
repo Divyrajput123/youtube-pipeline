@@ -441,6 +441,52 @@ class BatchModeConfig(BaseModel):
     target_count: int = Field(default=2, ge=2, le=10, description="Batch size (2–10).")
 
 
+class BilibiliConfig(BaseModel):
+    """Configuration for Bilibili video upload.
+
+    Authentication uses cookie-based auth (SESSDATA + bili_jct).
+    Obtain these from your browser after logging into bilibili.com:
+      - Open DevTools → Application → Cookies → bilibili.com
+      - Copy SESSDATA and bili_jct values
+
+    tid: Bilibili category ID for your content.
+      - 17  = Movie & TV / Short Film (推荐: 影视综合)
+      - 21  = Anime (番剧)
+      - 122 = Science & Technology
+      - 124 = Science & Technology / Computer Technology
+      - 171 = Original (原创)
+      - 182 = Short Film
+      - 201 = Science Fiction (科幻)  ← recommended for sci-fi channel
+      - 253 = Science & Education
+
+    Tokens needed for facebook_reels_sync_data mirroring:
+      instagram_basic, instagram_content_publish,
+      pages_read_engagement, pages_show_list
+    """
+
+    enabled: bool = False
+    sessdata: Optional[str] = Field(
+        default=None,
+        description="SESSDATA cookie value from bilibili.com — primary auth token.",
+    )
+    bili_jct: Optional[str] = Field(
+        default=None,
+        description="bili_jct cookie value from bilibili.com — CSRF token for write operations.",
+    )
+    tid: int = Field(
+        default=201,
+        description="Bilibili category ID (tid). 201=Science Fiction, 21=Anime, 122=Science & Tech.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        max_length=12,
+        description="Default tags added to every Bilibili upload (up to 12).",
+    )
+    source: str = Field(
+        default="",
+        description="Source URL or description. Leave empty for original content.",
+    )
+
 class PipelineConfig(BaseModel):
     """Root configuration model for the AI YouTube Content Pipeline."""
 
@@ -449,6 +495,7 @@ class PipelineConfig(BaseModel):
     notification_channels: NotificationChannels = Field(default_factory=NotificationChannels)
     cross_posting: CrossPostingConfig = Field(default_factory=CrossPostingConfig)
     instagram_reels: InstagramReelsConfig = Field(default_factory=InstagramReelsConfig)
+    bilibili: BilibiliConfig = Field(default_factory=BilibiliConfig)
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
     visual_video_provider: Literal["kling", "runpod", "minimax_h3"] = "minimax_h3"

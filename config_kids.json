@@ -55,5 +55,15 @@
     "_facebook_page_id_note": "RhymeVhyme Facebook Page ID — enables automatic Reel mirroring to Facebook Page.",
     "facebook_page_id": "1289047020955183",
     "extra_hashtags": ["kidsrhymes", "nurseryrhymes", "toddlers", "preschool", "learning"]
+  },
+
+  "_bilibili_note": "Bilibili upload — get SESSDATA and bili_jct from browser cookies after logging into bilibili.com. tid 201=Science Fiction, 21=Anime, 122=Science & Tech.",
+  "bilibili": {
+    "enabled": false,
+    "sessdata": "${BILIBILI_SESSDATA}",
+    "bili_jct": "${BILIBILI_BILI_JCT}",
+    "tid": 21,
+    "tags": ["nurseryrhymes", "kidsongs", "toddler", "preschool", "kidsrhymes"],
+    "source": ""
   }
 }

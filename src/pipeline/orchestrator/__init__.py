@@ -29,6 +29,7 @@ from typing import Any, Callable, Coroutine, Literal, Optional
 
 from pipeline.asset_store import Asset_Store, AssetStoreError
 from pipeline.content_calendar import Content_Calendar
+from pipeline.bilibili_uploader import BilibiliUploader
 from pipeline.cross_poster import Cross_Poster
 from pipeline.instagram_reels import InstagramReelsClient, upload_reel_from_short
 from pipeline.metadata_generator import Metadata_Generator
@@ -237,6 +238,7 @@ class Orchestrator:
         publisher: Publisher,
         cross_poster: Cross_Poster,
         instagram_reels_client: Optional[InstagramReelsClient],
+        bilibili_uploader: BilibiliUploader,
         asset_store: Asset_Store,
         content_calendar: Content_Calendar,
         notifier: Notifier,
@@ -251,6 +253,7 @@ class Orchestrator:
         self._publisher = publisher
         self._cross_poster = cross_poster
         self._instagram_reels_client = instagram_reels_client
+        self._bilibili_uploader = bilibili_uploader
         self._asset_store = asset_store
         self._content_calendar = content_calendar
         self._notifier = notifier
@@ -907,6 +910,46 @@ class Orchestrator:
 
             except Exception as exc:
                 logger.warning("start_pipeline: Instagram Reels encoding failed (non-fatal): %s", exc)
+
+        # Upload to Bilibili (non-fatal — failure does not stop the pipeline)
+        if self._config.bilibili.enabled:
+            try:
+                logger.info("Bilibili: downloading source video for upload...")
+                bili_mp4_bytes = await self._asset_store.read(
+                    video_id=video_id,
+                    subfolder=SubFolder.VIDEOS,
+                    filename=f"{video_id}_v1.mp4",
+                )
+                # Fetch thumbnail for cover image if available
+                bili_cover_bytes: Optional[bytes] = None
+                if visual.thumbnail_url:
+                    try:
+                        import httpx as _httpx  # noqa: PLC0415
+                        async with _httpx.AsyncClient(timeout=30.0) as _client:
+                            _resp = await _client.get(visual.thumbnail_url)
+                            if _resp.status_code == 200:
+                                bili_cover_bytes = _resp.content
+                    except Exception as _exc:
+                        logger.warning("Bilibili: could not fetch thumbnail: %s", _exc)
+
+                bili_result = await self._bilibili_uploader.upload(
+                    mp4_bytes=bili_mp4_bytes,
+                    metadata=metadata,
+                    cover_bytes=bili_cover_bytes,
+                )
+                if bili_result.success:
+                    logger.info(
+                        "Bilibili: upload successful for video_id=%s%s",
+                        video_id,
+                        f" bvid={bili_result.bvid}" if bili_result.bvid else "",
+                    )
+                else:
+                    logger.warning(
+                        "Bilibili: upload failed for video_id=%s: %s",
+                        video_id, bili_result.error,
+                    )
+            except Exception as exc:
+                logger.warning("start_pipeline: Bilibili upload failed (non-fatal): %s", exc)
 
         # Add end-screen linking to best-performing video (best-effort)
         try:

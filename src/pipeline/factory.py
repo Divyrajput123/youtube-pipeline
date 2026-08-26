@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from pipeline.asset_store import Asset_Store, GoogleDriveMCPClient
+from pipeline.bilibili_uploader import BilibiliUploader
 from pipeline.config import is_production_mode
 from pipeline.content_calendar import Content_Calendar, NotionMCPClient
 from pipeline.cross_poster import Cross_Poster
@@ -227,8 +228,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
 
     # ------------------------------------------------------------------
     # 11b. Instagram Reels Client
-    # ------------------------------------------------------------------
-    instagram_reels_client = None
+    # ------------------------------------------------------------------    instagram_reels_client = None
     if config.instagram_reels.enabled:
         # Resolve ${...} placeholders from environment
         ig_token = config.instagram_reels.access_token or ""
@@ -249,6 +249,26 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
         )
 
     # ------------------------------------------------------------------
+    # 11c. Bilibili Uploader
+    # ------------------------------------------------------------------
+    bilibili_cfg = config.bilibili
+    bili_sessdata = bilibili_cfg.sessdata or ""
+    bili_jct = bilibili_cfg.bili_jct or ""
+
+    # Resolve ${...} env var placeholders
+    if bili_sessdata.startswith("${") and bili_sessdata.endswith("}"):
+        bili_sessdata = os.environ.get(bili_sessdata[2:-1], "")
+    if bili_jct.startswith("${") and bili_jct.endswith("}"):
+        bili_jct = os.environ.get(bili_jct[2:-1], "")
+
+    bilibili_uploader = BilibiliUploader(
+        config=bilibili_cfg.model_copy(update={
+            "sessdata": bili_sessdata or None,
+            "bili_jct": bili_jct or None,
+        })
+    )
+
+    # ------------------------------------------------------------------
     # 12. Orchestrator
     # ------------------------------------------------------------------
     return Orchestrator(
@@ -262,6 +282,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
         publisher=publisher,
         cross_poster=cross_poster,
         instagram_reels_client=instagram_reels_client,
+        bilibili_uploader=bilibili_uploader,
         asset_store=asset_store,
         content_calendar=content_calendar,
         notifier=notifier,

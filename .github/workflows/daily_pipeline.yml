@@ -117,6 +117,8 @@ jobs:
             echo "FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID }}"
             echo "FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET }}"
             echo "GOOGLE_CLOUD_API_KEY=${{ secrets.GOOGLE_CLOUD_API_KEY }}"
+            echo "BILIBILI_SESSDATA=${{ secrets.BILIBILI_SESSDATA }}"
+            echo "BILIBILI_BILI_JCT=${{ secrets.BILIBILI_BILI_JCT }}"
           } > .env
           echo "✅ .env created ($(wc -l < .env) lines)"
           grep -c "GOOGLE_CLOUD_API_KEY" .env && echo "GOOGLE_CLOUD_API_KEY present"
