@@ -16,6 +16,10 @@
     "target_count": 2
   },
 
+  "shorts": {
+    "enabled": true
+  },
+
   "cross_posting": {
     "x":         { "enabled": false, "api_key": null },
     "linkedin":  { "enabled": false, "access_token": null },
