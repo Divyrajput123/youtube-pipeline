@@ -363,40 +363,11 @@ class GoogleCloudTTSClient:
         """
         import base64 as _b64  # noqa: PLC0415
         import httpx  # noqa: PLC0415
-        import re as _re  # noqa: PLC0415
 
         if not self._available:
             raise NarrationGeneratorError(
                 "Google Cloud TTS not available — set GOOGLE_CLOUD_API_KEY in .env"
             )
-
-        # Chirp3-HD has a ~1000 char limit per request — split long text into chunks
-        _CHIRP_MAX = 900
-        if len(text) > _CHIRP_MAX:
-            sentences = _re.split(r'(?<=[.!?])\s+', text)
-            chunks: list[str] = []
-            current = ""
-            for sentence in sentences:
-                if len(current) + len(sentence) + 1 <= _CHIRP_MAX:
-                    current = (current + " " + sentence).strip()
-                else:
-                    if current:
-                        chunks.append(current)
-                    current = sentence[:_CHIRP_MAX]
-            if current:
-                chunks.append(current)
-        else:
-            chunks = [text]
-
-        all_mp3: list[bytes] = []
-        for chunk in chunks:
-            all_mp3.append(await self._synthesize_single(chunk, sample_rate))
-        return b"".join(all_mp3)
-
-    async def _synthesize_single(self, text: str, sample_rate: int) -> bytes:
-        """Synthesize a single chunk via Chirp3-HD → WaveNet-D fallback."""
-        import base64 as _b64  # noqa: PLC0415
-        import httpx  # noqa: PLC0415
 
         # Try Chirp3-HD (Achird - deep male voice) on v1beta1 first
         body_chirp = {
@@ -416,16 +387,15 @@ class GoogleCloudTTSClient:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(url_beta, json=body_chirp)
-                if response.status_code != 200:
-                    raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
+                response.raise_for_status()
                 audio_content = response.json().get("audioContent", "")
                 mp3_bytes = _b64.b64decode(audio_content)
-                logger.info("GoogleCloudTTS (Chirp3-HD): synthesized %d bytes", len(mp3_bytes))
+                logger.info("GoogleCloudTTS (Chirp3-HD Achird): synthesized %d bytes", len(mp3_bytes))
                 return mp3_bytes
         except Exception as chirp_exc:
             logger.warning("Chirp3-HD failed (%s), falling back to WaveNet-D", chirp_exc)
 
-        # Fallback: WaveNet-D on v1
+        # Fallback: WaveNet-D on v1 (always works)
         body_wavenet = {
             "input": {"text": text},
             "voice": {
@@ -445,13 +415,11 @@ class GoogleCloudTTSClient:
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(url_v1, json=body_wavenet)
-            if response.status_code != 200:
-                raise RuntimeError(f"WaveNet HTTP {response.status_code}: {response.text[:200]}")
             response.raise_for_status()
             audio_content = response.json().get("audioContent", "")
             mp3_bytes = _b64.b64decode(audio_content)
 
-        logger.info("GoogleCloudTTS (WaveNet-D): synthesized %d bytes", len(mp3_bytes))
+        logger.info("GoogleCloudTTS (WaveNet-D fallback): synthesized %d bytes", len(mp3_bytes))
         return mp3_bytes
 
 
