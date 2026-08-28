@@ -236,7 +236,7 @@ class ViewmaxMCPClient:
 
         if provider == "minimax_h3":
             # MiniMax H3: 15s clips at 768p with character consistency (max supported)
-            self.CLIP_DURATION = 15
+            self.CLIP_DURATION = 10
             self.CLIP_WIDTH = 1366  # 768p 16:9
             self.CLIP_HEIGHT = 768
             self._h3_pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
