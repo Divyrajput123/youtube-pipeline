@@ -797,7 +797,8 @@ class Orchestrator:
         # ------------------------------------------------------------------ #
 
         # Extract a Short clip and upload it (best-effort, non-blocking)
-        try:
+        if self._config.shorts.enabled:
+          try:
             mp4_source = visual.mp4_url or visual.mp4_path
             short_id = await self._publisher.extract_and_upload_short(
                 video_id=video_id,
@@ -813,8 +814,10 @@ class Orchestrator:
                 if scheduled_publish_dt:
                     schedule_note = f" (scheduled: {scheduled_publish_dt.strftime('%Y-%m-%d %H:%M UTC')})"
                 logger.info("start_pipeline: Short uploaded — %s%s", short_id, schedule_note)
-        except Exception as exc:
+          except Exception as exc:
             logger.warning("start_pipeline: Shorts extraction failed (non-fatal): %s", exc)
+        else:
+          logger.info("start_pipeline: Shorts disabled — skipping Short extraction")
 
         # Upload Instagram Reel (separate encoding from Shorts, synced schedule)
         # NOTE: Reel posting during the main pipeline is unreliable due to Drive CDN

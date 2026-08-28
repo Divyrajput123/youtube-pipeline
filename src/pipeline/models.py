@@ -434,6 +434,12 @@ class InstagramReelsConfig(BaseModel):
     )
 
 
+class ShortsConfig(BaseModel):
+    """Configuration for YouTube Shorts auto-extraction and upload."""
+
+    enabled: bool = True
+
+
 class BatchModeConfig(BaseModel):
     """Batch processing settings."""
 
@@ -496,6 +502,7 @@ class PipelineConfig(BaseModel):
     cross_posting: CrossPostingConfig = Field(default_factory=CrossPostingConfig)
     instagram_reels: InstagramReelsConfig = Field(default_factory=InstagramReelsConfig)
     bilibili: BilibiliConfig = Field(default_factory=BilibiliConfig)
+    shorts: ShortsConfig = Field(default_factory=ShortsConfig)
     batch_mode: BatchModeConfig = Field(default_factory=BatchModeConfig)
     topic_research_provider: Literal["perplexity", "tavily"]
     visual_video_provider: Literal["kling", "runpod", "minimax_h3"] = "minimax_h3"
