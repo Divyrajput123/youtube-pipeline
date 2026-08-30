@@ -3,7 +3,7 @@
   "reference_channel_url": "https://www.youtube.com/@newrockstars",
 
   "_voice_id_note": "Paid library voice (better quality, requires paid plan): BlgEcC0TfWpBak7FmvHW. Free voice (Roger, works on free plan): CwhRBWXzGAHq8TQ4Fs17",
-  "voice_id": "Yp4mRmCkfa13ZOYtqZm8",
+  "voice_id": "Xxwqa6wwBKjyyUssmi0U",
   "topic_research_provider": "perplexity",
   "_visual_video_provider_note": "Choose 'kling' for the Kling API, 'runpod' for LTX-Video RunPod server, or 'minimax_h3' for MiniMax H3 (best quality, 15s clips, 768p).",
   "visual_video_provider": "minimax_h3",
