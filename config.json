@@ -13,7 +13,7 @@
   "style_profile_cache_days": 7,
 
   "_script_duration_note": "Target script duration in minutes. Word counts are derived at 150 WPM. e.g. 1 min = ~150 words, 3 min = ~450 words, 5 min = ~750 words, 10 min = ~1500 words.",
-  "script_duration_minutes": 6,
+  "script_duration_minutes": 8,
 
   "_script_style_note": "Writing style: cinematic_storytelling (superhero), kids_rhyming (nursery), educational, documentary",
   "script_style": "cinematic_storytelling",
