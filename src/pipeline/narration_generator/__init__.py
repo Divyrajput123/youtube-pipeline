@@ -257,11 +257,18 @@ class ElevenLabsMCPClient:
             output_format = f"mp3_{sample_rate}_{bitrate_kbps}"
 
             def _sync_call() -> bytes:
+                from elevenlabs import VoiceSettings  # noqa: PLC0415
                 audio_chunks = self._client.text_to_speech.convert(
                     voice_id=voice_id,
                     text=text,
                     model_id="eleven_multilingual_v2",
                     output_format=output_format,
+                    voice_settings=VoiceSettings(
+                        stability=0.5,
+                        similarity_boost=0.85,
+                        style=0.3,
+                        speed=1.15,  # slightly faster than default (1.0)
+                    ),
                 )
                 return b"".join(audio_chunks)
 
