@@ -178,7 +178,7 @@ jobs:
           PYTHONUNBUFFERED: 1
 
       - name: Stop MiniMax H3 Pod (always, even on failure)
-        if: always() && env.RUNPOD_H3_POD_ID != ''
+        if: false  # temporarily disabled
         run: |
           echo "🛑 Stopping MiniMax H3 Pod..."
           PYTHONPATH=src python runpod_server/minimax_h3/pod_manager.py stop || true
