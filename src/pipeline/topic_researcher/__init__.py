@@ -272,12 +272,12 @@ class PerplexityMCPClient:
                 + exclusion_block
             )
             system_content = (
-                "You are a children's content researcher specializing in nursery rhymes, "
-                "kids songs, and preschool learning videos for YouTube. "
-                "You MUST follow the strict topic mix: 5 classic nursery rhyme/learning topics "
-                "and 5 kids-friendly character/superhero adaptations per batch of 10. "
-                "Character topics must be educational (colors, counting, ABCs) not action-based. "
-                "Never suggest superhero fights, anime battles, or any non-toddler content."
+                "You are a children's YouTube content researcher. "
+                "You suggest a balanced mix of classic nursery rhyme topics AND "
+                "kids-friendly character/superhero topics (like Spiderman Colors, "
+                "Baby Hulk Counting, Batman ABC). "
+                "All topics must be educational and safe for toddlers aged 1-5. "
+                "Follow the exact topic mix ratio specified in the user prompt."
             )
         else:
             prompt = (
