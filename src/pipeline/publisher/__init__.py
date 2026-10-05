@@ -949,6 +949,16 @@ def _format_chapters(metadata: MetadataPackage) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_tags(tags: list[str]) -> list[str]:
+    """Remove empty, too-long, or character-invalid YouTube tags."""
+    clean = []
+    for tag in (tags or []):
+        tag = tag.strip().replace('"', '').replace("'", '').replace('<', '').replace('>', '')
+        if tag and len(tag) <= 100:
+            clean.append(tag)
+    return clean[:500]
+
+
 def _build_description(metadata: MetadataPackage) -> str:
     """Combine the base description with formatted chapter markers and AI disclosure.
 
@@ -1062,7 +1072,7 @@ class Publisher:
                     mp4_path=assets.mp4_url or assets.mp4_path,
                     title=metadata.title,
                     description=description,
-                    tags=metadata.tags,
+                    tags=_sanitize_tags(metadata.tags),
                     privacy="unlisted",
                 ),
                 attempts=_UPLOAD_ATTEMPTS,
@@ -1257,7 +1267,7 @@ class Publisher:
                     mp4_path=str(short_path),
                     title=short_title,
                     description=short_desc,
-                    tags=metadata.tags[:10],
+                    tags=_sanitize_tags(metadata.tags[:10]),
                     publish_at=publish_at,
                 )
                 schedule_info = ""
