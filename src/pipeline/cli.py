@@ -209,18 +209,20 @@ async def _run(args: argparse.Namespace) -> None:
             await orchestrator.resume_pipeline(run_id=run_id, video_id=video_id)
             print(f"Resumed run: {run_id}")
         elif args.resume_all:
-            # Query Notion for all videos not yet published and resume them
+            # Query Notion for all videos not yet published and resume them.
+            # Excludes: SCHEDULED, PUBLISHED, PIPELINE_ERROR, SCRIPT_REJECTED,
+            # VIDEO_REJECTED (handled by resume_pipeline's own guard), and
+            # AWAITING_FINAL_REVIEW / AWAITING_SCRIPT_REVIEW (gate is open —
+            # auto-resume would block waiting for human approval).
             from pipeline.models import PipelineStatus  # noqa: PLC0415
 
             resumable_statuses = [
                 PipelineStatus.SCRIPTING,
-                PipelineStatus.AWAITING_SCRIPT_REVIEW,
                 PipelineStatus.SCRIPT_APPROVED,
                 PipelineStatus.NARRATION_READY,
                 PipelineStatus.GENERATING_VISUALS,
                 PipelineStatus.VISUALS_READY,
                 PipelineStatus.GENERATING_METADATA,
-                PipelineStatus.AWAITING_FINAL_REVIEW,
                 PipelineStatus.APPROVED_FOR_UPLOAD,
                 PipelineStatus.AUTO_APPROVED_FOR_UPLOAD,
                 PipelineStatus.UPLOADING,
@@ -235,8 +237,13 @@ async def _run(args: argparse.Namespace) -> None:
                         video_id = video.get("video_id") or video.get("id", "")
                         if not video_id:
                             continue
-                        # Derive run_id from video_id (video_id = "video-XXXXXXXX")
-                        run_id = video_id.replace("video-", "") if video_id.startswith("video-") else video_id
+                        # Try to get full run_id from Notion record first,
+                        # fall back to deriving from video_id prefix
+                        run_id = video.get("run_id") or (
+                            video_id.replace("video-", "")
+                            if video_id.startswith("video-")
+                            else video_id
+                        )
                         print(f"  Resuming {video_id} (status: {status.value})...")
                         try:
                             await orchestrator.resume_pipeline(run_id=run_id, video_id=video_id)
@@ -252,11 +259,13 @@ async def _run(args: argparse.Namespace) -> None:
             # Resume all stuck videos first, then generate a new one
             from pipeline.models import PipelineStatus  # noqa: PLC0415
             resumable_statuses = [
-                PipelineStatus.SCRIPTING, PipelineStatus.AWAITING_SCRIPT_REVIEW,
-                PipelineStatus.SCRIPT_APPROVED, PipelineStatus.NARRATION_READY,
+                PipelineStatus.SCRIPTING,
+                PipelineStatus.SCRIPT_APPROVED,
+                PipelineStatus.NARRATION_READY,
                 PipelineStatus.GENERATING_VISUALS, PipelineStatus.VISUALS_READY,
-                PipelineStatus.GENERATING_METADATA, PipelineStatus.AWAITING_FINAL_REVIEW,
+                PipelineStatus.GENERATING_METADATA,
                 PipelineStatus.APPROVED_FOR_UPLOAD, PipelineStatus.AUTO_APPROVED_FOR_UPLOAD,
+                PipelineStatus.UPLOADING,
             ]
             print("Step 1/2: Resuming stuck videos...")
             resumed_count = 0
