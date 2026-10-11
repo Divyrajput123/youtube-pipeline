@@ -65,7 +65,6 @@ jobs:
 
           {
             echo "PIPELINE_MODE=production"
-            echo "VISUAL_PROMPT_MODE=kids_rhyming"
             echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
             echo "ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}"
             echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
