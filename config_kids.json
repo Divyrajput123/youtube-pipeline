@@ -2,8 +2,8 @@
   "_channel_note": "Family Learning Channel — fun educational songs and rhymes that parents teach their kids together.",
   "reference_channel_url": "https://www.youtube.com/@Blippi",
 
-  "_voice_note": "Custom kids voice (5ECyMHB4NuUFCq2YxatW). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
-  "voice_id": "5ECyMHB4NuUFCq2YxatW",
+  "_voice_note": "Custom kids voice generated via ElevenLabs Voice Design (ZaQWN6guFAAIYmo4FdyD). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
+  "voice_id": "ZaQWN6guFAAIYmo4FdyD",
   "topic_research_provider": "perplexity",
   "visual_video_provider": "minimax_h3",
   "_visual_prompt_mode_note": "kids_rhyming = H3 native voice + 3D animation style (no TTS, bright cheerful visuals). cinematic = action/fight scene style. narration = TTS voice (ElevenLabs Gigi) muxed with H3 cinematic b-roll.",
