@@ -279,6 +279,32 @@ class PerplexityMCPClient:
                 "All topics must be educational and safe for toddlers aged 1-5. "
                 "Follow the exact topic mix ratio specified in the user prompt."
             )
+        elif script_style == "family_learning":
+            prompt = (
+                "What are the 10 most POPULAR topics for a family learning YouTube channel "
+                "right now — content that parents and young children (ages 2-8) enjoy together? "
+                "Think Blippi, Cocomelon, National Geographic Kids, or How It's Made for kids.\n"
+                "Topics should cover:\n"
+                "• How things work (how do planes fly, how do volcanoes erupt, how is chocolate made)\n"
+                "• Animals and nature (coolest animals, ocean creatures, insects, dinosaurs)\n"
+                "• Colors, numbers, shapes explained in fun engaging ways\n"
+                "• Life skills for kids (how to tie shoes, why we brush teeth, how plants grow)\n"
+                "• Simple science experiments parents can do with kids at home\n"
+                "• World geography and cultures for children\n"
+                "• Professions and jobs explained for kids (what do firefighters/doctors/astronauts do)\n"
+                "All topics must be family-friendly, educational, and engaging for BOTH parents and children. "
+                "Frame titles the way a parent would search: 'How Do Airplanes Fly for Kids', "
+                "'Why Do We Have Seasons Explained Simply', 'Amazing Ocean Animals for Children'.\n"
+                "Format: numbered list 1-10, one topic per line, 5-9 words max. "
+                "Write entirely in English. Output ONLY the numbered list."
+                + exclusion_block
+            )
+            system_content = (
+                "You are a family learning YouTube content researcher. "
+                "You suggest engaging educational topics that parents and children aged 2-8 "
+                "enjoy watching together. Think Blippi, National Geographic Kids style — "
+                "fun, curious, educational, accessible to both adults and young kids."
+            )
         else:
             prompt = (
                 "What are the 10 most TRENDING and CURRENT superhero, anime, AND sci-fi topics "
@@ -492,6 +518,12 @@ class TavilyMCPClient:
                 "trending nursery rhymes kids songs toddler learning 2026 "
                 "ABC counting colors animals preschool youtube -superhero -anime -marvel -dc"
             )
+        elif script_style == "family_learning":
+            search_query = (
+                "trending family learning educational kids youtube 2026 "
+                "how things work animals nature science for kids Blippi "
+                "parent child learning activities preschool kindergarten -superhero -anime -marvel"
+            )
         else:
             search_query = (
                 "trending superhero anime scifi topics 2026 "
@@ -685,6 +717,9 @@ def _compute_relevance(title: str, script_style: str = "cinematic_storytelling")
     # Kids-friendly superhero topics (colors song, counting, baby versions) also score 1.0
     if script_style == "kids_rhyming":
         return 1.0, []
+    # Family learning channel: educational topics score 1.0
+    if script_style == "family_learning":
+        return 1.0, []
     matched = [tag for tag in _RELEVANCE_TAGS if tag.lower() in lower_title]
     score = 1.0 if matched else 0.5
     return score, matched
@@ -807,7 +842,7 @@ class Topic_Researcher:
             )
             try:
                 raw_results = await self._client.query_trending(
-                    query=_SEARCH_QUERY_KIDS if script_style == "kids_rhyming" else _SEARCH_QUERY,
+                    query=_SEARCH_QUERY_KIDS if script_style in ("kids_rhyming", "family_learning") else _SEARCH_QUERY,
                     hours_back=hours_back,
                     excluded_titles=list(excluded_lower),
                     script_style=script_style,

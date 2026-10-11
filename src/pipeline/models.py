@@ -465,7 +465,7 @@ class PipelineConfig(BaseModel):
     script_duration_minutes: float = Field(default=1.0, gt=0, le=30)
     script_style: str = Field(
         default="cinematic_storytelling",
-        description="Writing style for scripts: cinematic_storytelling, kids_rhyming, educational, documentary",
+        description="Writing style for scripts: cinematic_storytelling, kids_rhyming, educational, documentary, family_learning",
     )
 
     # Weekly schedule settings — used when batch_size=7

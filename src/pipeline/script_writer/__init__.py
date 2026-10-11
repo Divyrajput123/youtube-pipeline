@@ -345,6 +345,26 @@ REQUIRED SCRIPT STRUCTURE:
 
 3. CTA (thought-provoking final question + subscribe)"""
 
+    elif script_style == "family_learning":
+        return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
+You are a warm, energetic parent-friendly educator — think Blippi meets National Geographic Kids.
+Your audience is PARENTS watching WITH their children aged 2-8.
+RULES:
+- Use simple, clear language a 5-year-old can follow but an adult won't find boring
+- Be enthusiastic and curious — make learning feel like an adventure
+- Ask questions kids can answer ("Can you guess what color that is?")
+- Use fun comparisons ("An elephant is as heavy as a car!")
+- Keep sentences short and punchy
+- Parents should feel they're teaching their child something valuable
+- Include a "try this at home" or "look for this next time" moment
+REQUIRED SCRIPT STRUCTURE:
+1. HOOK (fun surprising fact or question a kid would love)
+2. BODY ({body_segments} segments — each simple and self-contained)
+   - One clear idea per segment
+   - Use relatable examples kids see every day
+   - Include an interactive question or action for the child
+3. CTA (encourage parents to share with their kids + subscribe)"""
+
     elif script_style == "documentary":
         return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
 You are narrating a prestige documentary — think David Attenborough or Ken Burns.
