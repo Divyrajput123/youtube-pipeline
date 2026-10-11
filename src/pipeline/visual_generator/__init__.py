@@ -1385,6 +1385,72 @@ async def _generate_cinematic_t2va_brief(
     return brief
 
 
+async def _generate_kids_narration_prompt(
+    segment: _Segment,
+    clip_num: int,
+    total_clips: int,
+    script_topic: str = "",
+) -> str:
+    """Bright, colorful, child-friendly visual prompt for kids narration mode.
+
+    Used when visual_prompt_mode=narration and script_style=kids_rhyming.
+    Produces cheerful, safe-for-kids 3D animation visuals instead of
+    the default dark cinematic superhero b-roll.
+    """
+    import re as _re  # noqa: PLC0415
+
+    body = _re.sub(r"\[/?[a-zA-Z]+\]", "", segment.body).strip()
+    title = segment.title.strip()
+
+    _KIDS_STYLE = (
+        "Bright cheerful 3D animation Pixar-quality, vivid saturated colors, "
+        "soft warm lighting, friendly cute characters, clean simple backgrounds, "
+        "safe for children, no violence, smooth playful motion, 24fps."
+    )
+
+    scene_settings = [
+        "sunny outdoor playground with colorful equipment and green grass",
+        "cozy bright classroom with ABC posters and colorful books",
+        "friendly farm with animated animals and blue sky",
+        "colorful underwater world with friendly sea creatures",
+        "magical forest with friendly animals and glowing flowers",
+        "busy friendly kitchen with fun food characters",
+    ]
+    setting = scene_settings[clip_num % len(scene_settings)]
+
+    system_prompt = (
+        "You are a children's video prompt writer for a 3D animation generator. "
+        "Write prompts that produce bright, cheerful, educational visuals safe for children aged 2-8. "
+        "Always use colorful, friendly imagery. No dark themes, no violence."
+    )
+
+    user_prompt = (
+        f"TOPIC: {script_topic or title}\n"
+        f"Script: \"{body[:200]}\"\n"
+        f"Setting: {setting}\n"
+        f"Clip {clip_num + 1}/{total_clips}\n\n"
+        "Write ONE short prompt (max 300 chars) showing friendly animated characters "
+        "related to the topic in bright cheerful colors, appropriate for toddlers. "
+        f"End with: {_KIDS_STYLE}"
+    )
+
+    try:
+        client = build_claude_client()
+        result = await client.complete(
+            f"{system_prompt}\n\n{user_prompt}",
+            max_tokens=300,
+        )
+        prompt = result.strip().strip('"\'')
+        logger.info("Kids narration prompt clip %d/%d: %s", clip_num + 1, total_clips, prompt[:80])
+        return prompt[:500]
+    except Exception as exc:
+        logger.warning("Kids narration Claude prompt failed clip %d: %s — fallback", clip_num, exc)
+        return (
+            f"Cute friendly animated characters learning about {script_topic or title}, "
+            f"{setting}, bright saturated colors, cheerful expressions, Pixar 3D style. {_KIDS_STYLE}"
+        )[:500]
+
+
 async def _generate_video_prompt_with_claude(
     segment: _Segment,
     clip_num: int,
@@ -1393,10 +1459,12 @@ async def _generate_video_prompt_with_claude(
     script_topic: str = "",
     character_descs: Optional[dict] = None,
     visual_prompt_mode: str = "narration",
+    script_style: str = "cinematic_storytelling",
 ) -> str:
     """Use Claude to generate an optimized video prompt with scene continuity.
 
     In ``narration`` mode: generic cinematic scene description (current behaviour).
+    In ``narration`` + ``kids_rhyming`` script_style: bright, colorful, child-friendly visuals.
     In ``cinematic`` mode: full H3 T2VA production brief with timed shots,
     speaker IDs, ``<d>[English]...</d>`` dialogue tags, soundscape, and score —
     parsed from the screenplay segment produced by _build_cinematic_generation_prompt.
@@ -1414,6 +1482,17 @@ async def _generate_video_prompt_with_claude(
             scene_state=scene_state or {},
             script_topic=script_topic,
             character_descs=character_descs,
+        )
+
+    # ------------------------------------------------------------------
+    # Kids narration mode — bright, colorful, child-friendly visuals
+    # ------------------------------------------------------------------
+    if script_style == "kids_rhyming":
+        return await _generate_kids_narration_prompt(
+            segment=segment,
+            clip_num=clip_num,
+            total_clips=total_clips,
+            script_topic=script_topic,
         )
 
     body = _re.sub(r"\[/?[a-zA-Z]+\]", "", segment.body).strip()
@@ -2050,12 +2129,14 @@ class Visual_Generator:
         content_calendar: Content_Calendar,
         notifier: Notifier,
         visual_prompt_mode: str = "narration",
+        script_style: str = "cinematic_storytelling",
     ) -> None:
         self._viewmax = viewmax_client
         self._asset_store = asset_store
         self._calendar = content_calendar
         self._notifier = notifier
         self._visual_prompt_mode = visual_prompt_mode
+        self._script_style = script_style
 
     # ------------------------------------------------------------------
     # Public interface
@@ -2213,6 +2294,7 @@ class Visual_Generator:
             segment_durations=segment_durations,
             script_topic=script_topic,
             visual_prompt_mode=self._visual_prompt_mode,
+            script_style=self._script_style,
         )
 
         # ---- 4. Build per-clip durations ----------------------------------------
@@ -2316,6 +2398,7 @@ class Visual_Generator:
         segment_durations: Optional[list[float]] = None,
         script_topic: str = "",
         visual_prompt_mode: str = "narration",
+        script_style: str = "cinematic_storytelling",
     ) -> list[ClipResult]:
         """Dispatch clip generation to the mode-specific implementation.
 
@@ -2344,6 +2427,7 @@ class Visual_Generator:
             video_id=video_id,
             segment_durations=segment_durations,
             script_topic=script_topic,
+            script_style=script_style,
         )
 
     # ------------------------------------------------------------------
@@ -2600,6 +2684,7 @@ class Visual_Generator:
         video_id: str,
         segment_durations: Optional[list[float]] = None,
         script_topic: str = "",
+        script_style: str = "cinematic_storytelling",
     ) -> list[ClipResult]:
         """Generate b-roll clips covering the full narration duration.
 
@@ -2670,6 +2755,7 @@ class Visual_Generator:
                 script_topic=script_topic,
                 character_descs=character_descs,
                 visual_prompt_mode="narration",
+                script_style=script_style,
             )
             prompts.append(prompt)
 
@@ -2984,16 +3070,38 @@ class Visual_Generator:
             # Narration audio input (index = n_clips)
             cmd += ["-i", str(local_mp3_path)]
 
-        # Filter graph — video normalisation (same for both modes)
+        # Filter graph — video normalisation + post-processing effects.
+        #
+        # Effects applied per-clip (narration mode) to differentiate from raw AI output:
+        #   1. Slight contrast/brightness boost (eq) — adds punch, reduces flat AI look
+        #   2. Subtle vignette — cinematic framing signal
+        #   3. Gentle sharpening (unsharp) — counters H3 softness, adds perceived quality
+        #   4. Zoom-pan (Ken Burns) — constant slow zoom-in over the clip duration, adds
+        #      motion to otherwise static shots and is a strong "edited" signal to YouTube
+        #
+        # Cinematic mode keeps H3 native audio/motion untouched — effects skipped there
+        # to avoid double-processing already stylised clips.
         filter_parts = []
         for i in range(n_clips):
+            seg_dur = segment_durations[i] if i < len(segment_durations) else _FALLBACK_CLIP_DURATION_S
+            # Ken Burns: zoom from 1.0x to 1.04x over the clip duration (subtle, not distracting)
+            zoom_expr = f"'1.0+0.04*on/(frame_rate*{seg_dur:.2f})'"
             filter_parts.append(
                 f"[{i}:v]"
                 f"scale=1920:1080:force_original_aspect_ratio=decrease,"
                 f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,"
                 f"setsar=1:1,"
                 f"fps={_FFMPEG_FRAMERATE},"
-                f"format=yuv420p"
+                f"format=yuv420p,"
+                # contrast +8%, brightness +2%, saturation +5%
+                f"eq=contrast=1.08:brightness=0.02:saturation=1.05,"
+                # gentle sharpening: luma 0.5, chroma 0.0, 5x5 kernel
+                f"unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.5:chroma_amount=0.0,"
+                # Ken Burns slow zoom
+                f"zoompan=z={zoom_expr}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                f":d={int(_FFMPEG_FRAMERATE * seg_dur)}:s=1920x1080:fps={_FFMPEG_FRAMERATE},"
+                # vignette: subtle dark edge, angle pi/6
+                f"vignette=angle=PI/6:mode=backward"
                 f"[v{i}]"
             )
 

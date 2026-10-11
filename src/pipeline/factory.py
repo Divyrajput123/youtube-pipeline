@@ -196,6 +196,7 @@ def build_orchestrator(config: PipelineConfig) -> Orchestrator:
         content_calendar=content_calendar,
         notifier=notifier,
         visual_prompt_mode=config.visual_prompt_mode,
+        script_style=config.script_style,
     )
 
     # ------------------------------------------------------------------
