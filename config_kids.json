@@ -1,21 +1,21 @@
 {
-  "_channel_note": "Kids Rhyming Channel — nursery rhymes, counting songs, ABC, bedtime stories. Separate YouTube channel, Notion DB, and Instagram account.",
-  "reference_channel_url": "https://www.youtube.com/@CoComelon",
+  "_channel_note": "Family Learning Channel — fun educational songs and rhymes that parents teach their kids together.",
+  "reference_channel_url": "https://www.youtube.com/@Blippi",
 
-  "_voice_note": "Gigi — child-like, playful ElevenLabs voice (jBpfuIE2acCO8z3wKNLl). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
-  "voice_id": "jBpfuIE2acCO8z3wKNLl",
+  "_voice_note": "Custom kids voice (5ECyMHB4NuUFCq2YxatW). Falls back to Google Cloud TTS Aoede (warm female Chirp3-HD voice).",
+  "voice_id": "5ECyMHB4NuUFCq2YxatW",
   "topic_research_provider": "perplexity",
   "visual_video_provider": "minimax_h3",
-  "_visual_prompt_mode_note": "kids_rhyming = H3 native voice + 3D animation style (no TTS, bright cheerful visuals). cinematic = action/fight scene style. narration = TTS voice + cinematic b-roll.",
-  "visual_prompt_mode": "kids_rhyming",
+  "_visual_prompt_mode_note": "kids_rhyming = H3 native voice + 3D animation style (no TTS, bright cheerful visuals). cinematic = action/fight scene style. narration = TTS voice (ElevenLabs Gigi) muxed with H3 cinematic b-roll.",
+  "visual_prompt_mode": "narration",
   "narration_provider": "elevenlabs",
   "style_profile_cache_days": 7,
 
   "_script_duration_note": "Kids videos are shorter — 1-2 minutes. At 150 WPM: 1 min = ~150 words, 2 min = ~300 words.",
   "script_duration_minutes": 4,
 
-  "_script_style_note": "Writing style: kids_rhyming produces singable rhyming scripts for children",
-  "script_style": "kids_rhyming",
+  "_script_style_note": "Writing style: educational produces engaging, parent-friendly learning content about colors, numbers, animals, etc.",
+  "script_style": "educational",
 
   "_weekly_schedule_note": "Kids content performs best in the morning. Schedule at 8 AM IST (2:30 UTC).",
   "weekly_publish_time_hour": 8,
@@ -58,6 +58,6 @@
     "share_to_feed": true,
     "_facebook_page_id_note": "RhymeVhyme Facebook Page ID — enables automatic Reel mirroring to Facebook Page.",
     "facebook_page_id": "1289047020955183",
-    "extra_hashtags": ["kidsrhymes", "nurseryrhymes", "toddlers", "preschool", "learning"]
+    "extra_hashtags": ["familylearning", "kidsactivities", "teachyourkids", "parentinglife", "earlylearning"]
   }
 }
