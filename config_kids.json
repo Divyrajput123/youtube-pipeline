@@ -14,8 +14,8 @@
   "_script_duration_note": "Kids videos are shorter — 1-2 minutes. At 150 WPM: 1 min = ~150 words, 2 min = ~300 words.",
   "script_duration_minutes": 0.5,
 
-  "_script_style_note": "Writing style: educational produces engaging, parent-friendly learning content about colors, numbers, animals, etc.",
-  "script_style": "educational",
+  "_script_style_note": "kids_rhyming keeps nursery/educational topics while narration mode uses our own voice instead of H3's",
+  "script_style": "kids_rhyming",
 
   "_weekly_schedule_note": "Kids content performs best in the morning. Schedule at 8 AM IST (2:30 UTC).",
   "weekly_publish_time_hour": 8,
