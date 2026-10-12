@@ -1441,6 +1441,20 @@ async def _generate_kids_narration_prompt(
             max_tokens=300,
         )
         prompt = result.strip().strip('"\'')
+        # Detect Claude safety refusals — use fallback instead of sending
+        # "I can't write this prompt..." text to H3 as a video generation prompt
+        refusal_phrases = ("i can't write", "i cannot write", "i'm unable to", "i won't write",
+                           "this prompt", "inappropriate", "i apologize")
+        if any(p in prompt.lower()[:80] for p in refusal_phrases):
+            logger.warning(
+                "Kids narration prompt clip %d/%d: Claude refused — using safe fallback",
+                clip_num + 1, total_clips,
+            )
+            return (
+                f"Cute friendly animated characters happily exploring and learning about "
+                f"{script_topic or title}, bright sunny outdoors setting, "
+                f"cheerful smiling faces, Pixar 3D style, saturated primary colors. {_KIDS_STYLE}"
+            )[:500]
         logger.info("Kids narration prompt clip %d/%d: %s", clip_num + 1, total_clips, prompt[:80])
         return prompt[:500]
     except Exception as exc:
