@@ -729,9 +729,16 @@ class Narration_Generator:
             "", clean_content, flags=_re.MULTILINE | _re.IGNORECASE,
         )
         # Also strip inline "Segment N:" or "Segment N -" labels that Claude
-        # sometimes echoes inside body paragraphs (e.g. "**Segment 1: Title**").
+        # sometimes echoes inside body paragraphs (e.g. "**Segment 1: Title**",
+        # "Segment 1", "**Segment 1**").
+        # Step A: remove the entire "Segment N: title" or "Segment N - title" inline
         clean_content = _re.sub(
-            r"\*{0,2}Segment[ \t]*\d+[ \t:\-–—]+\*{0,2}",
+            r"\*{0,2}Segment[ \t]*\d+[ \t:\-–—]+[^\n]*?\*{0,2}(?=\s|$)",
+            "", clean_content, flags=_re.IGNORECASE,
+        )
+        # Step B: catch bare "Segment N" or "**Segment N**" with no separator
+        clean_content = _re.sub(
+            r"\*{0,2}Segment[ \t]*\d+\*{0,2}",
             "", clean_content, flags=_re.IGNORECASE,
         )
 
