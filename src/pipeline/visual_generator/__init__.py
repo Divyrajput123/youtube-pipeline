@@ -2795,19 +2795,30 @@ class Visual_Generator:
             )
             prompts.append(prompt)
 
-        # Generate clips in parallel batches using semaphore
+        # Generate clips serially for minimax_h3 (GPU needs cooldown between clips).
+        # For other providers (kling etc.) run up to _MAX_CONCURRENT in parallel.
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
         async def _gen_with_limit(idx: int) -> ClipResult:
-            await asyncio.sleep(idx * 2.0)  # stagger to avoid thundering herd
+            await asyncio.sleep(idx * 2.0)  # light stagger so tasks don't all hit semaphore at once
             async with semaphore:
-                return await self._generate_single_clip(
+                result = await self._generate_single_clip(
                     segment_index=clip_tasks[idx]["seg_idx"],
                     segment=clip_tasks[idx]["segment"],
                     prompt=prompts[idx],
                     video_id=video_id,
                     seed=-1,
                 )
+                # GPU cooldown between clips — same 15s used in kids_rhyming mode.
+                # Without this the next clip submission finds the GPU still holding
+                # VRAM from the previous generation, causing silent failures.
+                if provider == "minimax_h3" and idx < len(clip_tasks) - 1:
+                    logger.info(
+                        "Visual_Generator [narration]: clip %d done — 15s GPU cooldown",
+                        idx + 1,
+                    )
+                    await asyncio.sleep(15.0)
+                return result
 
         clip_results = await asyncio.gather(
             *[_gen_with_limit(i) for i in range(len(clip_tasks))]
