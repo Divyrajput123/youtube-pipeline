@@ -2299,24 +2299,25 @@ class Visual_Generator:
 
         # ---- 4. Build per-clip durations ----------------------------------------
         # Cinematic mode: 1 clip per scene, each exactly CLIP_DURATION seconds.
-        # Narration mode: split each segment into clips of CLIP_DURATION each.
-        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
+        # All other modes (narration, kids_rhyming, family_learning, etc.): split each
+        # segment into clips of CLIP_DURATION seconds, calculated purely from audio duration.
+        # Formula: n_clips = max(1, round(seg_duration / clip_duration))
+        # e.g. 30s segment / 10s clips = 3 clips; 180s total / 10s = ~18 clips
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 10))
         per_clip_durations: list[float] = []
         if self._visual_prompt_mode == "cinematic":
             # One clip per scene — screenplay already defines the exact scene count
             per_clip_durations = [_CLIP_DUR] * len(segments)
-        elif self._visual_prompt_mode == "kids_rhyming":
-            # Kids: split segments by duration so total clips cover the full audio length.
-            # A 3-min kids script may only have 3-4 ## headings but needs ~12 clips of 15s.
-            _CUT_EVERY_S: float = _CLIP_DUR
-            for seg_dur in segment_durations:
-                n = max(1, round(seg_dur / _CUT_EVERY_S))
-                per_clip_durations.extend([seg_dur / n] * n)
         else:
-            _CUT_EVERY_S: float = _CLIP_DUR
-            for seg_dur in segment_durations:
-                n = max(1, round(seg_dur / _CUT_EVERY_S))
+            # Duration-driven: every mode except cinematic calculates clips from audio length.
+            # No hardcoded clip count — a 3-min script at 10s/clip = ~18 clips automatically.
+            for i, (seg, seg_dur) in enumerate(zip(segments, segment_durations)):
+                n = max(1, round(seg_dur / _CLIP_DUR))
                 per_clip_durations.extend([seg_dur / n] * n)
+                logger.info(
+                    "Visual_Generator: segment %d '%s' %.1fs → %d clips of %.1fs",
+                    i + 1, seg.title[:40], seg_dur, n, seg_dur / n,
+                )
 
         logger.info(
             "Visual_Generator: %d total clips, durations: %s",
@@ -2579,13 +2580,13 @@ class Visual_Generator:
 
         Rules:
         - Duration-based splitting: each segment gets n clips based on its duration
-          and CLIP_DURATION (15s). A 3-min script with 3 segments → ~12 clips total.
+          and CLIP_DURATION (10s). A 3-min script with 3 segments → ~18 clips total.
         - Always serial — single ComfyUI pod.
         - T2VA brief uses cheerful 3D animation style and narrator voiceover format.
         - Last-frame chaining for environment continuity between clips.
         - H3 native audio kept — no external TTS.
         """
-        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 10))
 
         # Build expanded clip list based on duration (same logic as narration)
         clip_tasks: list[tuple[int, _Segment, float]] = []  # (clip_idx_in_seg, segment, seg_dur)
@@ -2695,7 +2696,7 @@ class Visual_Generator:
         - Character descriptions generated once, shared across all clips for
           visual consistency.
         """
-        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 15))
+        _CLIP_DUR: float = float(getattr(self._viewmax, "CLIP_DURATION", 10))
         provider = getattr(self._viewmax, "_provider", "kling")
         _MAX_CONCURRENT: int = 1 if provider == "minimax_h3" else 5
 
