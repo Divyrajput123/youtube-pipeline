@@ -1850,6 +1850,7 @@ def _extract_thumbnail_from_clips(clip_results: list[ClipResult]) -> Optional[by
 async def _generate_ai_thumbnail(
     title: str,
     script_body: str,
+    script_style: str = "cinematic_storytelling",
 ) -> Optional[bytes]:
     """Generate a professional YouTube thumbnail using Claude + Ideogram/Pollinations.
 
@@ -1879,8 +1880,32 @@ async def _generate_ai_thumbnail(
 
     try:
         client = build_claude_client()
+        is_kids = script_style in ("family_learning", "kids_rhyming")
 
-        meta_prompt = f"""You are a YouTube thumbnail designer who creates prompts for AI image generators (Ideogram).
+        if is_kids:
+            meta_prompt = f"""You are a YouTube thumbnail designer for a kids family learning channel (audience: parents + children aged 2-8).
+
+VIDEO TITLE: {title}
+FULL SCRIPT:
+{script_body}
+
+Generate a SINGLE detailed image generation prompt for a 1280×720 YouTube thumbnail that attracts parents browsing YouTube with their young children.
+
+REQUIREMENTS:
+1. STYLE: Bright, cheerful, Pixar/Blippi-style 3D animation OR colorful illustrated style — warm, inviting, NOT dark or scary
+2. SUBJECT: Show the main topic from the script in a fun child-friendly way (cute animals, colorful objects, friendly characters, nature scenes)
+3. COMPOSITION: Central subject fills 60-70% of frame, bright solid-color or nature background
+4. COLORS: Highly saturated primary colors — bright yellows, reds, blues, greens — the kind that pop in kids content
+5. MOOD: Happy, curious, wonder-filled — a child should want to click it immediately
+6. TEXT: Large bold ALL-CAPS text:
+   - Main text (huge, white with thick colored outline): 2-4 words from the video topic
+   - Sub-text (bright yellow): a fun question like "Do YOU know?" or "Let's find out!"
+7. NO dark themes, NO scary elements, NO violence, NO adult content
+8. Full-bleed edge-to-edge, no borders, designed for mobile visibility
+
+Output ONLY the image generation prompt (200-300 words). No explanations, no markdown."""
+        else:
+            meta_prompt = f"""You are a YouTube thumbnail designer who creates prompts for AI image generators (Ideogram).
 
 VIDEO TITLE: {title}
 FULL SCRIPT:
@@ -1913,16 +1938,26 @@ Output ONLY the image generation prompt (300-450 words). No explanations, no mar
 
     except Exception as exc:
         logger.warning("Claude thumbnail prompt generation failed: %s — using fallback", exc)
-        # Fallback: generic but better than before
-        image_prompt = (
-            f"Ultra-wide 16:9 YouTube thumbnail, 1280x720, full-bleed edge-to-edge, "
-            f"no borders, no white space. Dramatic cinematic scene for: {title}. "
-            f"Two powerful characters in dramatic confrontation poses filling 90% of frame. "
-            f"Dramatic volumetric lighting, lens flare, cinematic depth, "
-            f"destroyed environment background, high contrast, "
-            f"photorealistic, Hollywood movie poster quality, 8K detail. "
-            f"Large bold text 'WHO WINS?' with thick dark outline and glow. "
-            f"Designed for maximum YouTube CTR and mobile visibility."
+        is_kids = script_style in ("family_learning", "kids_rhyming")
+        if is_kids:
+            image_prompt = (
+                f"Bright cheerful 16:9 YouTube thumbnail, 1280x720, full-bleed. "
+                f"Colorful Pixar-style 3D animation scene about: {title}. "
+                f"Cute friendly characters in a bright happy environment. "
+                f"Saturated primary colors, warm lighting, child-friendly. "
+                f"Large bold text with thick outline. Safe for kids. "
+                f"Designed for maximum YouTube CTR for family content."
+            )
+        else:
+            image_prompt = (
+                f"Ultra-wide 16:9 YouTube thumbnail, 1280x720, full-bleed edge-to-edge, "
+                f"no borders, no white space. Dramatic cinematic scene for: {title}. "
+                f"Two powerful characters in dramatic confrontation poses filling 90% of frame. "
+                f"Dramatic volumetric lighting, lens flare, cinematic depth, "
+                f"destroyed environment background, high contrast, "
+                f"photorealistic, Hollywood movie poster quality, 8K detail. "
+                f"Large bold text 'WHO WINS?' with thick dark outline and glow. "
+                f"Designed for maximum YouTube CTR and mobile visibility."
         )
 
     # ---- Step 2: Generate the thumbnail image --------------------------------
@@ -2339,7 +2374,7 @@ class Visual_Generator:
 
             # ---- 5. Generate thumbnail — AI image + text overlay -----------
             video_title = segments[0].title if segments else video_id
-            thumbnail_bytes = await _generate_ai_thumbnail(video_title, script.content) or \
+            thumbnail_bytes = await _generate_ai_thumbnail(video_title, script.content, script_style=self._script_style) or \
                               _make_thumbnail_jpeg(style_profile, video_title)
 
             # ---- 6. Determine version and upload --------------------------

@@ -346,6 +346,11 @@ REQUIRED SCRIPT STRUCTURE:
 3. CTA (thought-provoking final question + subscribe)"""
 
     elif script_style == "family_learning":
+        # Build explicit numbered segment headings so Claude cannot collapse them into one "## BODY"
+        body_heading_lines = "\n".join(
+            f"## Segment {i}: [give this segment a short fun title]\n(one clear idea, a relatable example, an interactive question for the child)"
+            for i in range(1, body_segments + 1)
+        )
         return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
 You are a warm, energetic parent-friendly educator — think Blippi meets National Geographic Kids.
 Your audience is PARENTS watching WITH their children aged 2-8.
@@ -357,18 +362,18 @@ RULES:
 - Keep sentences short and punchy
 - Parents should feel they're teaching their child something valuable
 - Include a "try this at home" or "look for this next time" moment
-REQUIRED SCRIPT STRUCTURE (use EXACTLY these ## markdown headings):
+REQUIRED SCRIPT STRUCTURE — you MUST use ALL of these ## headings in this exact order:
 ## HOOK
-(fun surprising fact or question a kid would love — 2-3 sentences)
-## Segment 1: [descriptive title]
-(first body segment — one clear idea, relatable example, interactive question)
-## Segment 2: [descriptive title]
-(second body segment — one clear idea, relatable example, interactive question)
-[continue for all {body_segments} body segments, each as its own ## heading]
+(fun surprising fact or question a kid would love — 2-3 sentences max)
+{body_heading_lines}
 ## CTA
-(encourage parents to share with their kids + subscribe)
-IMPORTANT: Every section MUST start with a ## heading (two hash symbols followed by a space).
-Do NOT use plain text section labels like "HOOK:" or "CTA:" — use ## markdown headings only."""
+(encourage parents to share with their kids + subscribe — 1-2 sentences)
+CRITICAL RULES FOR HEADINGS:
+- Use EXACTLY {body_segments + 2} ## headings total: HOOK + {body_segments} Segments + CTA
+- Replace [give this segment a short fun title] with an actual descriptive title
+- NEVER merge segments — each ## heading is its own separate section
+- NEVER write "## BODY" — each body section gets its own numbered ## Segment heading
+- NEVER skip a segment — all {body_segments} body segments are required"""
 
     elif script_style == "documentary":
         return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
