@@ -357,13 +357,18 @@ RULES:
 - Keep sentences short and punchy
 - Parents should feel they're teaching their child something valuable
 - Include a "try this at home" or "look for this next time" moment
-REQUIRED SCRIPT STRUCTURE:
-1. HOOK (fun surprising fact or question a kid would love)
-2. BODY ({body_segments} segments — each simple and self-contained)
-   - One clear idea per segment
-   - Use relatable examples kids see every day
-   - Include an interactive question or action for the child
-3. CTA (encourage parents to share with their kids + subscribe)"""
+REQUIRED SCRIPT STRUCTURE (use EXACTLY these ## markdown headings):
+## HOOK
+(fun surprising fact or question a kid would love — 2-3 sentences)
+## Segment 1: [descriptive title]
+(first body segment — one clear idea, relatable example, interactive question)
+## Segment 2: [descriptive title]
+(second body segment — one clear idea, relatable example, interactive question)
+[continue for all {body_segments} body segments, each as its own ## heading]
+## CTA
+(encourage parents to share with their kids + subscribe)
+IMPORTANT: Every section MUST start with a ## heading (two hash symbols followed by a space).
+Do NOT use plain text section labels like "HOOK:" or "CTA:" — use ## markdown headings only."""
 
     elif script_style == "documentary":
         return f"""WRITING STYLE (THIS IS THE #1 PRIORITY):
@@ -489,7 +494,7 @@ TOTAL WORD COUNT TARGET: between {min_words} and {max_words} words (excluding an
 
 Match the channel's rhetorical patterns ({rhetorical}) throughout.
 Output ONLY the script content — no preamble, no explanations, no metadata.
-Start directly with the HOOK section heading.
+Start directly with the HOOK section heading (use ## markdown format, e.g. "## HOOK").
 """
     return prompt
 
