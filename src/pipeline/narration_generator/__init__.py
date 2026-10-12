@@ -725,8 +725,14 @@ class Narration_Generator:
         )
         # Also catch standalone "Segment N: ..." headings not preceded by BODY.
         clean_content = _re.sub(
-            r"^[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?Segment[ \t]*\d+[ \t:\-–—]*[^\n]*$",
+            r"^[ \t]*\*{0,2}[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?Segment[ \t]*\d+[ \t:\-–—]*[^\n]*$",
             "", clean_content, flags=_re.MULTILINE | _re.IGNORECASE,
+        )
+        # Also strip inline "Segment N:" or "Segment N -" labels that Claude
+        # sometimes echoes inside body paragraphs (e.g. "**Segment 1: Title**").
+        clean_content = _re.sub(
+            r"\*{0,2}Segment[ \t]*\d+[ \t:\-–—]+\*{0,2}",
+            "", clean_content, flags=_re.IGNORECASE,
         )
 
         # 4. Remove lines that are only dashes or asterisks (horizontal rules)
