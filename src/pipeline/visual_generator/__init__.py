@@ -1487,7 +1487,7 @@ async def _generate_video_prompt_with_claude(
     # ------------------------------------------------------------------
     # Kids narration mode — bright, colorful, child-friendly visuals
     # ------------------------------------------------------------------
-    if script_style == "kids_rhyming":
+    if script_style in ("kids_rhyming", "family_learning"):
         return await _generate_kids_narration_prompt(
             segment=segment,
             clip_num=clip_num,
