@@ -3085,7 +3085,7 @@ class Visual_Generator:
         for i in range(n_clips):
             seg_dur = segment_durations[i] if i < len(segment_durations) else _FALLBACK_CLIP_DURATION_S
             # Ken Burns: zoom from 1.0x to 1.04x over the clip duration (subtle, not distracting)
-            zoom_expr = f"'1.0+0.04*on/(frame_rate*{seg_dur:.2f})'"
+            zoom_expr = f"'1.0+0.04*on/({_FFMPEG_FRAMERATE}*{seg_dur:.2f})'"
             filter_parts.append(
                 f"[{i}:v]"
                 f"scale=1920:1080:force_original_aspect_ratio=decrease,"
