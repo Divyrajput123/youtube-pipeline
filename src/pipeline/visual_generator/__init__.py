@@ -3117,22 +3117,12 @@ class Visual_Generator:
             # Narration audio input (index = n_clips)
             cmd += ["-i", str(local_mp3_path)]
 
-        # Filter graph — video normalisation + post-processing effects.
-        #
-        # Effects applied per-clip (narration mode) to differentiate from raw AI output:
-        #   1. Slight contrast/brightness boost (eq) — adds punch, reduces flat AI look
-        #   2. Subtle vignette — cinematic framing signal
-        #   3. Gentle sharpening (unsharp) — counters H3 softness, adds perceived quality
-        #   4. Zoom-pan (Ken Burns) — constant slow zoom-in over the clip duration, adds
-        #      motion to otherwise static shots and is a strong "edited" signal to YouTube
-        #
-        # Cinematic mode keeps H3 native audio/motion untouched — effects skipped there
-        # to avoid double-processing already stylised clips.
+        # Filter graph — simple normalisation per clip.
+        # zoompan (Ken Burns) removed — it reprocesses every frame at 1920×1080,
+        # destroys the H3 native motion, and makes the video look like a static
+        # slow-zoom image. H3 clips already have motion — just normalise and concat.
         filter_parts = []
         for i in range(n_clips):
-            seg_dur = segment_durations[i] if i < len(segment_durations) else _FALLBACK_CLIP_DURATION_S
-            # Ken Burns: zoom from 1.0x to 1.04x over the clip duration (subtle, not distracting)
-            zoom_expr = f"'1.0+0.04*on/({_FFMPEG_FRAMERATE}*{seg_dur:.2f})'"
             filter_parts.append(
                 f"[{i}:v]"
                 f"scale=1920:1080:force_original_aspect_ratio=decrease,"
@@ -3140,15 +3130,7 @@ class Visual_Generator:
                 f"setsar=1:1,"
                 f"fps={_FFMPEG_FRAMERATE},"
                 f"format=yuv420p,"
-                # contrast +8%, brightness +2%, saturation +5%
-                f"eq=contrast=1.08:brightness=0.02:saturation=1.05,"
-                # gentle sharpening: luma 0.5, chroma 0.0, 5x5 kernel
-                f"unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.5:chroma_amount=0.0,"
-                # Ken Burns slow zoom
-                f"zoompan=z={zoom_expr}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                f":d={int(_FFMPEG_FRAMERATE * seg_dur)}:s=1920x1080:fps={_FFMPEG_FRAMERATE},"
-                # vignette: subtle dark edge, angle pi/6
-                f"vignette=angle=PI/6:mode=backward"
+                f"eq=contrast=1.08:brightness=0.02:saturation=1.05"
                 f"[v{i}]"
             )
 
