@@ -485,6 +485,36 @@ class GoogleDriveMCPClient(DriveClient):
         loop = _asyncio.get_running_loop()
         return await loop.run_in_executor(None, _sync_get_url)
 
+    async def delete_file(self, folder_path: str, filename: str) -> bool:
+        """Delete a file from Drive. Returns True if deleted, False if not found.
+
+        Args:
+            folder_path: Slash-separated folder path within the root Drive folder.
+            filename: The bare filename to delete.
+
+        Returns:
+            True if the file was found and deleted, False if it didn't exist.
+        """
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        folder_id = await self._get_or_create_folder(folder_path)
+
+        def _sync_delete() -> bool:
+            result = self._service.files().list(
+                q=f"name='{filename}' and '{folder_id}' in parents and trashed=false",
+                fields="files(id, name)",
+                spaces="drive",
+            ).execute()
+            files = result.get("files", [])
+            if not files:
+                return False
+            file_id = files[0]["id"]
+            self._service.files().delete(fileId=file_id).execute()
+            return True
+
+        loop = _asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_delete)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -662,6 +692,126 @@ class Asset_Store:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def delete_video_mp4(self, video_id: str, filename: str) -> bool:
+        """Delete a video MP4 from Drive to free storage space.
+
+        Safe to call at any time — only deletes the specific MP4 file,
+        never touches scripts, thumbnails, narration, or logs.
+        """
+        _validate_video_id(video_id)
+        folder = _folder_path(video_id, SubFolder.VIDEOS)
+        try:
+            deleted = await self._drive.delete_file(folder, filename)
+            if deleted:
+                logger.info(
+                    "Asset_Store: deleted MP4 %s/%s from Drive (storage cleanup)",
+                    folder, filename,
+                )
+            return deleted
+        except Exception as exc:
+            logger.warning(
+                "Asset_Store: could not delete MP4 %s/%s: %s",
+                folder, filename, exc,
+            )
+            return False
+
+    async def cleanup_old_video_mp4s(
+        self,
+        notion_token: str,
+        notion_database_id: str,
+        min_age_days: int = 30,
+    ) -> int:
+        """Delete Drive MP4s for videos that are >= min_age_days old and already
+        uploaded to YouTube (status: Scheduled, Unlisted, Published).
+
+        Only deletes the raw MP4 — scripts, thumbnails, narration MP3, and logs
+        are kept. Returns number of files deleted.
+        """
+        import httpx  # noqa: PLC0415
+        from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)
+        safe_statuses = {"Scheduled", "Unlisted", "Published"}
+        deleted_count = 0
+
+        logger.info(
+            "Asset_Store.cleanup_old_video_mp4s: scanning for MP4s older than %d days",
+            min_age_days,
+        )
+
+        headers = {
+            "Authorization": f"Bearer {notion_token}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+        url = f"https://api.notion.com/v1/databases/{notion_database_id}/query"
+        payload: dict = {
+            "filter": {
+                "or": [
+                    {"property": "Status", "status": {"equals": s}}
+                    for s in safe_statuses
+                ]
+            },
+            "page_size": 100,
+        }
+
+        pages: list = []
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                while True:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    pages.extend(data.get("results", []))
+                    if not data.get("has_more"):
+                        break
+                    payload["start_cursor"] = data["next_cursor"]
+        except Exception as exc:
+            logger.warning("Asset_Store.cleanup: could not query Notion: %s", exc)
+            return 0
+
+        logger.info(
+            "Asset_Store.cleanup: found %d uploaded videos to check", len(pages)
+        )
+
+        for page in pages:
+            try:
+                props = page.get("properties", {})
+                created_time_str = page.get("created_time", "")
+                if not created_time_str:
+                    continue
+                created_time = datetime.fromisoformat(
+                    created_time_str.replace("Z", "+00:00")
+                )
+                if created_time > cutoff:
+                    continue  # Too recent — skip
+
+                video_id_prop = props.get("Video ID", props.get("video_id", {}))
+                rich_text = video_id_prop.get("rich_text", [])
+                if not rich_text:
+                    continue
+                video_id = rich_text[0].get("plain_text", "").strip()
+                if not video_id:
+                    continue
+
+                mp4_filename = f"{video_id}_v1.mp4"
+                deleted = await self.delete_video_mp4(video_id, mp4_filename)
+                if deleted:
+                    deleted_count += 1
+                    logger.info(
+                        "Asset_Store.cleanup: deleted %s (%d days old)",
+                        mp4_filename,
+                        (datetime.now(timezone.utc) - created_time).days,
+                    )
+            except Exception as exc:
+                logger.debug("Asset_Store.cleanup: error processing page: %s", exc)
+
+        logger.info(
+            "Asset_Store.cleanup_old_video_mp4s: deleted %d MP4(s) from Drive",
+            deleted_count,
+        )
+        return deleted_count
 
     async def _retry_with_backoff(
         self,

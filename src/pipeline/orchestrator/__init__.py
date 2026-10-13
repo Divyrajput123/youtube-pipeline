@@ -313,6 +313,27 @@ class Orchestrator:
             raise
 
         # ------------------------------------------------------------------ #
+        # Storage cleanup — delete MP4s older than 30 days from Drive         #
+        # Runs silently before each pipeline; never blocks on failure.         #
+        # ------------------------------------------------------------------ #
+        try:
+            notion_token = os.environ.get("NOTION_AUTH_TOKEN", "")
+            notion_db_id = os.environ.get("NOTION_DATABASE_ID", "")
+            if notion_token and notion_db_id:
+                deleted = await self._asset_store.cleanup_old_video_mp4s(
+                    notion_token=notion_token,
+                    notion_database_id=notion_db_id,
+                    min_age_days=30,
+                )
+                if deleted:
+                    logger.info(
+                        "Storage cleanup: freed space by deleting %d old MP4(s) from Drive",
+                        deleted,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Storage cleanup failed (non-fatal): %s", exc)
+
+        # ------------------------------------------------------------------ #
         # Stage 1: Reference_Analyzer → StyleProfile                          #
         # ------------------------------------------------------------------ #
         style_profile: StyleProfile = await self._run_stage(
