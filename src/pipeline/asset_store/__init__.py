@@ -745,16 +745,9 @@ class Asset_Store:
             "Notion-Version": "2022-06-28",
             "Content-Type": "application/json",
         }
-        url = f"https://api.notion.com/v1/databases/{notion_database_id}/query"
-        payload: dict = {
-            "filter": {
-                "or": [
-                    {"property": "Status", "status": {"equals": s}}
-                    for s in safe_statuses
-                ]
-            },
-            "page_size": 100,
-        }
+        # Use the Notion search endpoint which accepts the plain DB ID
+        url = f"https://api.notion.com/v1/databases/{notion_database_id.replace('-', '')}/query"
+        payload: dict = {"page_size": 100}
 
         pages: list = []
         try:
@@ -787,7 +780,13 @@ class Asset_Store:
                 if created_time > cutoff:
                     continue  # Too recent — skip
 
-                video_id_prop = props.get("Video ID", props.get("video_id", {}))
+                # Check status — only delete MP4s for uploaded videos
+                status_prop = props.get("status", {})
+                status_val = status_prop.get("select", {}).get("name", "")
+                if status_val not in safe_statuses:
+                    continue
+
+                video_id_prop = props.get("video_id", {})
                 rich_text = video_id_prop.get("rich_text", [])
                 if not rich_text:
                     continue
