@@ -36,12 +36,12 @@ _DEFAULT_DURATION_MIN = 1.0
 _MIN_WORDS = int(_DEFAULT_DURATION_MIN * _WPM * 0.85)
 _MAX_WORDS = int(_DEFAULT_DURATION_MIN * _WPM * 1.15)
 
-# Timing constants used to derive max-word limits per section (at 150 WPM)
-_WPM = 150
-_HOOK_MAX_SECONDS = 60
-_CTA_MAX_SECONDS = 30
-_HOOK_MAX_WORDS = _WPM * _HOOK_MAX_SECONDS // 60  # 150 words
-_CTA_MAX_WORDS = _WPM * _CTA_MAX_SECONDS // 60    # 75 words
+# Cold open is ~8 seconds. At a fast spoken pace that is about 25 words.
+# A 60-second "hook" is an intro, and short-attention viewers are already gone.
+_HOOK_MAX_SECONDS = 8
+_CTA_MAX_SECONDS = 20
+_HOOK_MAX_WORDS = 25
+_CTA_MAX_WORDS = 45
 
 # Claude retry policy (design §1 General Retry Policy)
 _CLAUDE_RETRY_ATTEMPTS = 3
@@ -398,40 +398,46 @@ REQUIRED SCRIPT STRUCTURE:
 
 3. CTA (reflective closing thought + subscribe)"""
 
-    else:  # cinematic_storytelling (default)
-        return f"""STORYTELLING STYLE (THIS IS THE #1 PRIORITY — OVERRIDE EVERYTHING ELSE):
-You are a cinematic narrator telling an EPIC STORY — not explaining facts.
-Your script should feel like a movie, not a textbook. Every sentence should make
-the viewer feel something: awe, fear, excitement, curiosity.
+    else:  # cinematic_storytelling (default) — main sci-fi / superhero channel
+        return f"""RETENTION STYLE (THIS IS THE #1 PRIORITY — OVERRIDE THE REFERENCE CHANNEL):
+You write for a sci-fi and superhero channel whose viewers decide in the first
+3 seconds. Pace is fast fight-commentary, not a trailer that builds slowly.
+Every line is a scene that is already in motion.
 
-RULES FOR STORYTELLING:
-- NEVER say "Let's talk about..." or "In this video we'll explore..." — these are boring
-- NEVER list facts like a Wikipedia article
-- ALWAYS write in scenes: describe what's HAPPENING, not what something IS
-- Open EVERY segment by dropping the viewer into the middle of action
-- Use present tense for action scenes: "He raises his fist. The ground cracks."
-- Short sentences for impact. Then a longer sentence to let the rhythm breathe and build.
-- Create REVEALS and TWISTS: "But here's the thing nobody realizes..."
-- End every segment on a cliffhanger that forces the viewer to keep watching
-- Write like you're narrating a movie trailer combined with a fight commentary
+COLD OPEN — the ## HOOK section, HARD CAP { _HOOK_MAX_WORDS } words (~{_HOOK_MAX_SECONDS} seconds):
+- Sentence 1 is the payoff. A specific image, a number, or an impossible claim.
+- No "Picture this." No "In a world." No "Let's talk about." No greeting. No title recap.
+- The viewer must feel the consequence before they know the premise.
+- Second sentence opens a question the rest of the video has to answer.
+- Use [fast] and [emphasis] only. [pause] and [slow] are forbidden in the hook.
 
-BAD (boring factual — NEVER DO THIS):
-"Superman has super strength and can fly at high speeds. He was born on Krypton and sent to Earth."
+GOOD HOOK:
+"## HOOK
+[fast] One punch. Six city blocks gone. [emphasis]He was not even aiming.[/emphasis] So what happens when he actually tries?"
 
-GOOD (cinematic storytelling — ALWAYS DO THIS):
-"[pause] Picture this. A man floating above the clouds... fists clenched... cape tearing in the wind. Below him, an entire city holds its breath. Because the last time he hit something this hard... [emphasis]a mountain disappeared.[/emphasis]"
+BAD HOOK (slow setup — never do this):
+"[pause] Picture this. A man floating above the clouds, fists clenched, cape tearing in the wind, while an entire city holds its breath..."
+
+PACE RULES:
+- Average sentence: 8 to 14 words. No sentence over 18 words.
+- Present tense. One action per sentence. Concrete nouns and verbs.
+- A new reveal, reversal, or question every 2 to 3 sentences. Recap is dead air.
+- Pay off the previous cliffhanger in the FIRST sentence of the next segment, then open a new loop in the LAST sentence. Never leave a loop hanging for a whole minute.
+- Banned phrases: "Let's talk about", "In this video", "Before we get into", "First, some background", "Here's the thing", "Picture this", "As we all know".
+- Do not copy a slow reference channel. Ignore long sentences and low words-per-minute from the style profile.
 
 REQUIRED SCRIPT STRUCTURE:
-Write a complete YouTube video script told as a STORY with these sections:
 
-1. HOOK (drop the viewer into a dramatic moment — mid-action, mid-crisis)
+## HOOK
+({_HOOK_MAX_WORDS} words max. Consequence first. Question second.)
 
-2. BODY ({body_segments} segments — each told as a SCENE, not a lecture)
-   - Each segment is a new SCENE with rising stakes
-   - Show don't tell: "His fist connects. Shockwave levels six city blocks." NOT "He has super strength."
-   - Each segment ends with a twist or escalation
+## BODY ({body_segments} segments — each a SCENE, not a lecture)
+- Open on action already happening: "His fist connects. The shockwave levels six blocks."
+- Never explain what a power IS. Show what it just did.
+- Last sentence of each segment is a cliffhanger the next segment answers immediately.
 
-3. CTA (dramatic closing statement + call-to-action)"""
+## CTA
+({_CTA_MAX_WORDS} words max. One last unanswered image, then one line asking them to subscribe. No recap of the video.)"""
 
 
 def _build_generation_prompt(
@@ -475,12 +481,39 @@ def _build_generation_prompt(
 
     body_segments = max(3, min(5, round(sp.segment_structure.body_segment_count_avg)))
 
+    # Main sci-fi channel: a slow reference profile must not drag the script
+    # back into long setup sentences. Kids and documentary styles still follow
+    # the measured profile above.
+    if script_style == "cinematic_storytelling":
+        pacing_block = (
+            "- Delivery: FAST. Spoken target 175 words/minute. "
+            "Sentence length 8-14 words, hard cap 18.\n"
+            "- IGNORE the reference channel if it is slower than this. "
+            f"Reference was {pacing_desc} at {sp.pacing.avg_words_per_minute} words/minute "
+            f"with {sp.pacing.avg_sentence_length_words:.1f}-word sentences — do not copy that pace.\n"
+            "- No intro section. The hook is the cold open, then straight into scene one."
+        )
+        annotation_rules = (
+            "- HOOK: [fast] and [emphasis] only. Never [pause], [slow], [quiet], or [breath].\n"
+            "- BODY and CTA: at least one of [fast], [emphasis], [loud] per segment.\n"
+            "- [pause] and [slow] are allowed at most once in the entire script, and never in the first 45 seconds."
+        )
+    else:
+        pacing_block = (
+            f"- Pacing: {pacing_desc} ({sp.pacing.avg_words_per_minute} words/minute)\n"
+            f"- Average sentence length: {sp.pacing.avg_sentence_length_words:.1f} words"
+        )
+        annotation_rules = (
+            "- Add AT LEAST ONE speaker-direction annotation per section/segment using these tags:\n"
+            "  [pause], [emphasis], [slow], [fast], [loud], [quiet], [breath]\n"
+            "- These annotations guide the narrator and must reflect the channel pacing data."
+        )
+
     prompt = f"""You are writing a YouTube video script for a channel with the following style profile:
 
 CHANNEL STYLE:
 - Narration tone: {tone_desc} (sentiment polarity: {sp.narration_tone.sentiment_polarity:.2f})
-- Pacing: {pacing_desc} ({sp.pacing.avg_words_per_minute} words/minute)
-- Average sentence length: {sp.pacing.avg_sentence_length_words:.1f} words
+{pacing_block}
 - Rhetorical patterns used: {rhetorical}
 - Segment structure: {"intro present, " if sp.segment_structure.intro_present else ""}{"hook present, " if sp.segment_structure.hook_present else ""}body ({body_segments} segments average){"," if sp.segment_structure.cta_present else ""}{"CTA present" if sp.segment_structure.cta_present else ""}
 
@@ -489,15 +522,12 @@ VIDEO TOPIC: {topic.title}
 {_get_style_instructions(script_style, body_segments)}
 
 ANNOTATION REQUIREMENTS (MANDATORY):
-- Add AT LEAST ONE speaker-direction annotation per section/segment using these tags:
-  [pause], [emphasis], [slow], [fast], [loud], [quiet], [breath]
-- Place annotations inline where the direction applies, e.g.: "This is [emphasis]critical[/emphasis]"
-  or "[pause]" between sentences to signal a beat.
-- These annotations guide the narrator and must reflect the channel pacing data.
+- Place annotations inline where the direction applies, e.g.: "This is [emphasis]critical[/emphasis]".
+{annotation_rules}
 
 TOTAL WORD COUNT TARGET: between {min_words} and {max_words} words (excluding annotation tags).
 
-Match the channel's rhetorical patterns ({rhetorical}) throughout.
+Match the channel's rhetorical patterns ({rhetorical}) throughout.{" Never let them slow the cold open or stretch a sentence past the pace rules above." if script_style == "cinematic_storytelling" else ""}
 Output ONLY the script content — no preamble, no explanations, no metadata.
 Start directly with the HOOK section heading (use ## markdown format, e.g. "## HOOK").
 """
@@ -510,6 +540,7 @@ def _build_word_count_revision_prompt(
     topic_title: str,
     min_words: int = _MIN_WORDS,
     max_words: int = _MAX_WORDS,
+    script_style: str = "cinematic_storytelling",
 ) -> str:
     """Construct a prompt asking Claude to revise the script to fit word-count bounds.
 
@@ -523,7 +554,24 @@ def _build_word_count_revision_prompt(
     Returns:
         A revision prompt string.
     """
-    if current_word_count < min_words:
+    if script_style == "cinematic_storytelling":
+        pace_rule = (
+            "Keep the fast pace: sentences stay under 18 words, the HOOK stays "
+            f"under {_HOOK_MAX_WORDS} words, and you never add background or setup."
+        )
+        if current_word_count < min_words:
+            direction = (
+                f"The script is too short ({current_word_count} words). "
+                f"Expand it to at least {min_words} words by adding more action beats, "
+                f"reversals, and specific consequences. {pace_rule}"
+            )
+        else:
+            direction = (
+                f"The script is too long ({current_word_count} words). "
+                f"Cut it to at most {max_words} words by deleting setup, recap, and "
+                f"scene-setting first. Keep the cold open and every cliffhanger. {pace_rule}"
+            )
+    elif current_word_count < min_words:
         direction = (
             f"The script is too short ({current_word_count} words). "
             f"Expand it to reach at least {min_words} words by adding more detail, "
@@ -609,16 +657,15 @@ SCREENPLAY RULES (follow ALL of them):
 4. STAKES IN EVERY LINE — each exchange reveals something, changes something, or raises tension.
    Dead air = dead viewer.
 
-5. ACTION BEATS between dialogue — silence + spectacle is more powerful than constant talking.
-   A 15-second action beat after a key line lets it land.
+5. ACTION BEATS between dialogue — the fight keeps moving. No beat where characters stand and let a line "land."
 
 6. THE PEAK LINE — one line that the entire video builds toward. 
    It reframes everything the viewer thought they knew. It's what they'll quote in comments.
 
 7. UNRESOLVED ENDING — final clip cuts on action, not resolution. Leave them wanting more.
 
-8. DAMAGE ESCALATION — the environment gets progressively destroyed across clips.
-   Clip 1: intact. Clip {total_clips//2}: partially destroyed. Clip {total_clips}: crater/ruins.
+8. DAMAGE ESCALATION — destruction is already happening in clip 1.
+   Clip 1: impact in progress. Clip {total_clips//2}: buildings coming down. Clip {total_clips}: crater still tearing open. Nobody stands in an intact city.
 
 ---
 REQUIRED OUTPUT FORMAT (follow exactly):
@@ -645,7 +692,7 @@ DAMAGE: [current state of environment — intact/cracking/partially destroyed/ru
 ---
 SCENE STRUCTURE for {total_clips} clips (~{duration_min:.0f} min):
 
-- Scenes 1-2: ESTABLISH — introduce characters, hint at conflict, first taunt
+- Scenes 1-2: COLD OPEN — the fight or the reveal is already happening. No standing around, no skyline. The first line is the consequence, then a question.
 - Scenes 3-{total_clips//2}: ESCALATE — exchanges get sharper, action intensifies, one reveal
 - Scene {total_clips//2 + 1}: PEAK LINE — the single most memorable line of the video
 - Scenes {total_clips//2 + 2}-{total_clips-1}: CLIMAX — maximum destruction, pure action beats
@@ -704,7 +751,7 @@ EDIT INSTRUCTIONS:
 REQUIREMENTS FOR THE REVISED SCRIPT:
 - Apply the edit instructions faithfully.
 - Preserve the original structure (HOOK, BODY segments, CTA).
-- Keep AT LEAST ONE speaker-direction annotation ([pause], [emphasis], etc.) per section/segment.
+- Keep existing speaker-direction annotations. Do not add [pause] or [slow] tags.
 - Output ONLY the revised script, no preamble, no explanations.
 
 CURRENT SCRIPT:
@@ -827,7 +874,9 @@ class Script_Writer:
                 video_id,
             )
         else:
-            prompt = _build_generation_prompt(topic, style_profile, min_words, max_words)
+            prompt = _build_generation_prompt(
+                topic, style_profile, min_words, max_words, script_style=script_style
+            )
 
         # ---- 3. Call Claude with retry -------------------------------------
         content = await self._call_claude_with_retry(prompt, video_id=video_id)
@@ -857,7 +906,8 @@ class Script_Writer:
                 video_id,
             )
             revision_prompt = _build_word_count_revision_prompt(
-                content, word_count, topic.title, min_words, max_words
+                content, word_count, topic.title, min_words, max_words,
+                script_style=script_style,
             )
             content = await self._call_claude_with_retry(revision_prompt, video_id=video_id)
             word_count = _count_words(content)

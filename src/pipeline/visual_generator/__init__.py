@@ -235,19 +235,20 @@ class ViewmaxMCPClient:
         self._h3_api_key = os.environ.get("RUNPOD_H3_API_KEY", os.environ.get("RUNPOD_API_KEY", "")).strip()
 
         if provider == "minimax_h3":
-            # MiniMax H3: 15s clips at 768p with character consistency (max supported)
-            self.CLIP_DURATION = 10
+            # 6s cuts. A 10s clip of one move reads as slow motion to a
+            # short-attention viewer. H3 accepts 5–15s.
+            self.CLIP_DURATION = 6
             self.CLIP_WIDTH = 1366  # 768p 16:9
             self.CLIP_HEIGHT = 768
             self._h3_pod_id = os.environ.get("RUNPOD_H3_POD_ID", "").strip()
             if self._h3_pod_id:
                 logger.info(
-                    "ViewmaxMCPClient: selected MiniMax H3 ComfyUI pod=%s (15s clips, 768p)",
+                    "ViewmaxMCPClient: selected MiniMax H3 ComfyUI pod=%s (6s clips, 768p)",
                     self._h3_pod_id,
                 )
             elif self._h3_endpoint_id and self._h3_api_key:
                 logger.info(
-                    "ViewmaxMCPClient: selected MiniMax H3 endpoint=%s (15s clips, 768p)",
+                    "ViewmaxMCPClient: selected MiniMax H3 endpoint=%s (6s clips, 768p)",
                     self._h3_endpoint_id,
                 )
             elif is_production_mode():
@@ -1285,15 +1286,21 @@ async def _generate_cinematic_t2va_brief(
 
     # Choose camera movement based on position
     camera_moves = [
-        "the camera pushes in with small amplitude at slow speed",
+        "the camera crash-zooms into the impact at fast speed",
         "the camera pulls out with large amplitude at fast speed",
         "the camera arcs around the subject at fast speed",
-        "the camera holds a static shot, no pan, no push-in",
+        "the camera whip-pans to the next hit",
         "the camera tracks alongside the action at fast speed",
-        "the camera tilts up with small amplitude at slow speed",
+        "the camera punches in as the shockwave hits",
         "the camera shakes strongly during the impact",
     ]
-    camera = camera_moves[clip_num % len(camera_moves)]
+    if global_pos == 0:
+        camera = (
+            "the camera is already inside the impact on frame one — "
+            "fast motion only, no slow push-in, no characters standing still"
+        )
+    else:
+        camera = camera_moves[clip_num % len(camera_moves)]
 
     # Style prefix
     style = (
@@ -1312,7 +1319,7 @@ async def _generate_cinematic_t2va_brief(
         # Build shot description
         shot_body = (
             f"[Shot 1] {style}. {slug}. {damage_desc}. "
-            f"{s1_desc} stands across from {s2_desc}. {camera}. "
+            f"{s1_desc} is already mid-strike against {s2_desc}. {camera}. "
         )
 
         # Speaker 1 line
@@ -1326,7 +1333,7 @@ async def _generate_cinematic_t2va_brief(
         # Cut to reaction / speaker 2
         if line2 and s2_desc:
             shot_body += (
-                f"[Shot 2] At 00:05.000, the camera cuts to {s2_desc}. "
+                f"[Shot 2] At 00:02.000, the camera cuts to {s2_desc}, already moving. "
                 f"The {s2_desc.split(',')[0].strip()} with a {s2_voice} (S2) replies: "
                 f"<d>[English] {line2}</d> "
                 f"Their lips close fully. "
@@ -1338,7 +1345,7 @@ async def _generate_cinematic_t2va_brief(
         # Add action continuation
         if action_desc:
             shot_body += (
-                f"[Shot 3] At 00:10.000, the camera cuts to a wide shot as {action_desc}"
+                f"[Shot 3] At 00:04.000, the camera cuts as the action continues: {action_desc}"
             )
 
         soundscape = sound_desc or (
@@ -1357,10 +1364,10 @@ async def _generate_cinematic_t2va_brief(
         shot_body = (
             f"[Shot 1] {style}. {slug}. {damage_desc}. "
             f"{action}. {camera}. "
-            f"[Shot 2] At 00:06.000, the camera cuts to a wide shot as the shockwave "
+            f"[Shot 2] At 00:02.000, the camera cuts to a wide shot as the shockwave "
             f"tears outward, debris flying in all directions, energy crackling. "
-            f"[Shot 3] At 00:11.000, the camera cuts to a close-up of the aftermath — "
-            f"smoke rising, ground cracked and scorched, combatants reassessing."
+            f"[Shot 3] At 00:04.000, the camera cuts as the next blow is already landing — "
+            f"debris still in the air, nobody standing still."
         )
 
         soundscape = sound_desc or (
@@ -1528,10 +1535,19 @@ async def _generate_video_prompt_with_claude(
     total_global = scene_state.get("total_global_clips", total_clips)
     progress = total_position / max(1, total_global - 1)
 
-    if progress < 0.25:
-        scene_phase = "opening: storm clouds gathering, city intact, tension building, dusk"
-        damage_level = "city intact, glass windows reflecting storm clouds"
-        emotion_guidance = "characters sizing each other up — narrow eyes, battle stance, restrained power"
+    # First frame has to be the payoff. A skyline and "tension building"
+    # is the shot viewers swipe away from.
+    if total_position == 0:
+        scene_phase = (
+            "COLD OPEN: the hit, collapse, or reveal is already happening in frame one. "
+            "No establishing shot, no skyline, no characters standing still"
+        )
+        damage_level = "destruction already in motion, debris in the air, the impact has landed"
+        emotion_guidance = "shock and urgency — body already moving, mouth open mid-shout"
+    elif progress < 0.25:
+        scene_phase = "immediate escalation: the next blow lands before the dust settles"
+        damage_level = "windows bursting, pavement splitting, debris still airborne"
+        emotion_guidance = "adrenaline — already committed, no staring, no wind-up pose"
     elif progress < 0.5:
         scene_phase = "escalation: rain pouring, first impacts, blue lightning tears across sky"
         damage_level = "windows shattered on nearby buildings, cracks in pavement"
@@ -1541,28 +1557,33 @@ async def _generate_video_prompt_with_claude(
         damage_level = "buildings partially collapsed, debris everywhere, fires burning"
         emotion_guidance = "intense fury, gritted teeth, screaming with effort, pushing limits"
     else:
-        scene_phase = "resolution: rubble-filled crater, embers floating, dust settling"
-        damage_level = "massive crater, collapsed skyscrapers, embers floating"
-        emotion_guidance = "exhausted but standing, determination in eyes, battle-worn"
+        scene_phase = "final blow still landing: crater opening, no slow fade, no characters standing still"
+        damage_level = "massive crater tearing open, skyscrapers mid-collapse, debris still moving"
+        emotion_guidance = "last surge of effort — still moving, not posing, not watching the dust"
 
     camera_options = [
-        "epic aerial drone shot pushing forward slowly",
-        "extreme close-up slow motion dolly-in",
-        "drone camera rapidly pulling backward through explosion",
-        "low-angle tracking shot circling the heroes",
-        "handheld shaky cam rushing alongside the action",
-        "crane shot slowly descending into the destruction",
-        "orbit shot circling both warriors",
-        "whip pan following the projectile",
+        "crash zoom straight into the impact",
+        "whip pan following the strike",
+        "handheld camera rushing through the debris",
+        "low-angle tracking shot sprinting with the action",
+        "rapid drone dive toward the collision",
+        "snap from a wide blast to an extreme close-up",
+        "high-speed orbit around the clash",
+        "camera punches in as the shockwave hits",
     ]
-    camera = camera_options[clip_num % len(camera_options)]
+    if total_position == 0:
+        camera = (
+            "crash zoom into the impact from the first frame — "
+            "fast motion only, no slow push-in, no slow motion"
+        )
+    else:
+        camera = camera_options[clip_num % len(camera_options)]
 
     # Master style block — injected once, keeps every clip stylistically consistent
     _MASTER_STYLE = (
-        "Ultra realistic live-action Hollywood blockbuster IMAX HDR PBR "
-        "ray-traced reflections volumetric lighting cinematic color grading "
-        "24fps realistic destruction physics shallow depth of field dynamic "
-        "camera movement film grain high temporal consistency."
+        "Ultra realistic live-action Hollywood blockbuster, fast motion from "
+        "frame one, high-speed camera, debris and bodies already moving, "
+        "no slow motion, no static pose, no empty skyline, no slow push-in."
     )
 
     # Use dynamic character descriptions if available, else generic fallback
@@ -1611,7 +1632,7 @@ ALL CHARACTERS IN THIS VIDEO:
 
 IMPORTANT: Every prompt MUST describe the characters' full appearance from the descriptions above. Never use names, pronouns, or vague references like "the hero." Always include gender, costume details, and distinctive features so the video generator renders the correct characters.
 
-ENVIRONMENT: Futuristic city. Dark storm clouds, rain-soaked streets, glass skyscrapers. Damage escalates: intact → windows crack → buildings shake → skyscrapers collapse → streets split → crater forms.
+ENVIRONMENT: Futuristic city already under attack. Rain-soaked streets, glass skyscrapers mid-collapse. Damage is in motion from clip 1: debris in the air → windows bursting → buildings falling → streets splitting → crater tearing open. Never an intact skyline with nobody moving.
 
 MASTER STYLE (append to every prompt unchanged):
 {_MASTER_STYLE}
@@ -1620,7 +1641,8 @@ RULES:
 1. Read the script action — show EXACTLY the characters mentioned in it
 2. BOTH/ALL characters in the script action must be FULLY DESCRIBED by appearance in the prompt
 3. Vary actions — no two clips should show the same move
-4. TRANSITION PHRASES (use each once in order): Clip2="The collision detonates..." Clip3="Before the smoke clears..." Clip4="Emerging from the dust cloud..." Clip5="In the battle's aftermath..." Clip6+="In the silence that follows..."
+4. TRANSITION PHRASES (use each once in order): Clip2="The next hit lands..." Clip3="Before the smoke clears..." Clip4="He is already moving again..." Clip5="The ground gives way..." Clip6+="The fight does not slow down..."
+4b. PACE: something is moving in the first second of every clip. Forbidden: slow push-in, slow motion, characters standing and staring, empty skyline, storm clouds with no action. The first clip of the video shows the consequence already happening.
 5. EMOTION WORDS — forbidden: "widen". Use: jaw tightens / gaze sharpens / expression hardens / eyes blaze / grimaces / grins with contempt / unwavering stare / refuses to yield
 6. Append master style tag at end
 7. Max 350 characters before style tag, present tense, no dialogue
@@ -1654,7 +1676,7 @@ Emotion (ONE word, never "widen"): {emotion_guidance}
 Camera: {camera}
 {extra_chars_in_scene}
 Clip {clip_num + 1}/{total_clips} (global {total_position + 1}/{total_global})
-{"Transition: use clip " + str(min(clip_num, 5) + 2) + " phrase" if clip_num > 0 else "Opening clip — no transition"}
+{"Transition: use clip " + str(min(clip_num, 5) + 2) + " phrase" if clip_num > 0 else "COLD OPEN — first frame is the impact or the reveal. No establishing shot."}
 
 INSTRUCTIONS:
 1. Read the "Script action" above carefully — it tells you EXACTLY which characters are doing what.
@@ -1673,8 +1695,15 @@ Write ONE prompt. End with the master style tag."""
             max_tokens=350,
         )
         prompt = result.strip().strip('"\'')
+        # Claude often drops the pace line. Lock it on every main-channel clip.
+        motion_lock = (
+            " Fast continuous action from frame one. "
+            "No slow motion, no static pose, no empty skyline."
+        )
+        if "no slow motion" not in prompt.lower():
+            prompt = (prompt + motion_lock).strip()
         logger.info("Claude prompt clip %d/%d: %s", clip_num + 1, total_clips, prompt[:80])
-        return prompt[:500]
+        return prompt[:600]
 
     except Exception as exc:
         logger.warning("Claude prompt failed for '%s' clip %d: %s — fallback", title[:30], clip_num, exc)
@@ -2629,7 +2658,7 @@ class Visual_Generator:
 
         Rules:
         - Duration-based splitting: each segment gets n clips based on its duration
-          and CLIP_DURATION (10s). A 3-min script with 3 segments → ~18 clips total.
+          and CLIP_DURATION (6s). A 3-min script with 3 segments → ~30 clips total.
         - Always serial — single ComfyUI pod.
         - T2VA brief uses cheerful 3D animation style and narrator voiceover format.
         - Last-frame chaining for environment continuity between clips.
